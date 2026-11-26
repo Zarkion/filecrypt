@@ -14,11 +14,11 @@ A version 1 file is any file that starts with the magic bytes `FCX1`
 followed by the version byte `1`. Concretely, future releases will keep
 supporting all of these:
 
-* the version 1 layout described in the [README](../README.md#format):
+* the version 1 layout specified in [FORMAT.md](FORMAT.md):
   magic, version, KDF id and settings, salt, wrapped file key, nonce prefix,
   chunk size and chunks;
 * KDF id 1 (Argon2id), 2 (scrypt) and 3 (HKDF-SHA256), with the settings
-  encodings in the README;
+  encodings in FORMAT.md;
 * AES-256-GCM with the STREAM nonce (7-byte prefix, 4-byte big-endian
   counter, 1-byte last-chunk flag) and the two associated-data rules;
 * any chunk size from 1 KiB to 16 MiB, not just the 64 KiB filecrypt writes;
@@ -38,11 +38,11 @@ supporting all of these:
   files, but any setting that a released version let you encrypt with stays
   decryptable. Files with expensive settings may need a confirmation or
   `--max-kdf-memory`, as they do today, but they are never refused outright.
-* **Passphrase handling stays compatible.** Today a passphrase is used as its
-  exact UTF-8 bytes. If a later release normalizes passphrases (for example
-  Unicode NFC, so the same accented passphrase works on every operating
-  system), it will still try the exact bytes, so files made before the change
-  keep opening.
+* **Passphrase handling stays compatible.** Passphrases are encoded as
+  Unicode NFC UTF-8, so the same accented passphrase works on every operating
+  system. Releases before that used the exact UTF-8 bytes typed. filecrypt
+  always tries those exact bytes too when the NFC form doesn't open a file,
+  so files made before the change keep opening.
 * **Defaults may get stronger.** New files may get higher KDF costs or a
   different default KDF. Files made with older, weaker defaults still decrypt;
   `filecrypt rekey` upgrades their key block without re-encrypting the body.
@@ -81,6 +81,9 @@ comes from `cryptography` 44+ or, on older versions, from `argon2-cffi`.
 
 ## How the promise is checked
 
-The plan is to keep a set of fixed version 1 test files (test vectors) in the
-repository and decrypt them in CI on every change, so a release that breaks
-old files can't ship unnoticed.
+A set of fixed version 1 test files lives in
+[`tests/vectors/`](../tests/vectors/): valid files for every KDF, including
+one from before passphrase normalization, and damaged or crafted files that
+must be rejected. CI decrypts all of them on every change, so a release that
+breaks old files can't ship unnoticed. The vectors are never changed once
+committed.

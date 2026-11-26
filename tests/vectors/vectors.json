@@ -1,0 +1,617 @@
+{
+  "format": "fcx version 1",
+  "generator": "tests/vectors/generate.py",
+  "spec": "docs/FORMAT.md",
+  "reject_at": {
+    "header": "parsing the fixed header fails (bad magic, version, lengths or chunk size)",
+    "kdf": "the KDF id or settings are unknown, malformed or over a cap; no KDF work is done",
+    "key": "the file key fails to unwrap (wrong secret, or the key block was modified)",
+    "body": "a chunk fails authentication, or data is missing, reordered or left over"
+  },
+  "vectors": [
+    {
+      "name": "argon2id-passphrase",
+      "valid": true,
+      "file": "argon2id-passphrase.fcx",
+      "plaintext": "argon2id-passphrase.plain",
+      "kdf": "argon2id",
+      "chunk_size": 1024,
+      "plaintext_len": 2500,
+      "secrets": [
+        {
+          "kind": "passphrase",
+          "utf8": "correct horse battery staple"
+        }
+      ],
+      "description": "Argon2id passphrase, 1 KiB chunks, three chunks (the last one partial)."
+    },
+    {
+      "name": "argon2id-empty",
+      "valid": true,
+      "file": "argon2id-empty.fcx",
+      "plaintext": "argon2id-empty.plain",
+      "kdf": "argon2id",
+      "chunk_size": 1024,
+      "plaintext_len": 0,
+      "secrets": [
+        {
+          "kind": "passphrase",
+          "utf8": "correct horse battery staple"
+        }
+      ],
+      "description": "Empty plaintext: a single empty final chunk (just a 16-byte tag)."
+    },
+    {
+      "name": "argon2id-nfc",
+      "valid": true,
+      "file": "argon2id-nfc.fcx",
+      "plaintext": "argon2id-nfc.plain",
+      "kdf": "argon2id",
+      "chunk_size": 1024,
+      "plaintext_len": 1500,
+      "secrets": [
+        {
+          "kind": "passphrase",
+          "utf8": "cr\u00e8me br\u00fbl\u00e9e for the caf\u00e9"
+        },
+        {
+          "kind": "passphrase",
+          "utf8": "cre\u0300me bru\u0302le\u0301e for the cafe\u0301"
+        }
+      ],
+      "description": "Accented passphrase, keyed with its NFC UTF-8 bytes as filecrypt does now. Opens whether the passphrase is entered composed (NFC) or decomposed (NFD)."
+    },
+    {
+      "name": "argon2id-legacy-nfd",
+      "valid": true,
+      "file": "argon2id-legacy-nfd.fcx",
+      "plaintext": "argon2id-legacy-nfd.plain",
+      "kdf": "argon2id",
+      "chunk_size": 1024,
+      "plaintext_len": 1500,
+      "secrets": [
+        {
+          "kind": "passphrase",
+          "utf8": "cre\u0300me bru\u0302le\u0301e for the cafe\u0301"
+        }
+      ],
+      "description": "Accented passphrase keyed with its exact decomposed (NFD) bytes, as releases before passphrase normalization wrote. A decryptor must retry with the exact bytes when the NFC form fails."
+    },
+    {
+      "name": "scrypt-passphrase",
+      "valid": true,
+      "file": "scrypt-passphrase.fcx",
+      "plaintext": "scrypt-passphrase.plain",
+      "kdf": "scrypt",
+      "chunk_size": 1024,
+      "plaintext_len": 3072,
+      "secrets": [
+        {
+          "kind": "passphrase",
+          "utf8": "correct horse battery staple"
+        }
+      ],
+      "description": "scrypt passphrase, 1 KiB chunks, plaintext an exact multiple of the chunk size: three full chunks, the third flagged last, and no empty chunk after it."
+    },
+    {
+      "name": "hkdf-key",
+      "valid": true,
+      "file": "hkdf-key.fcx",
+      "plaintext": "hkdf-key.plain",
+      "kdf": "hkdf-sha256",
+      "chunk_size": 1024,
+      "plaintext_len": 2500,
+      "secrets": [
+        {
+          "kind": "key",
+          "hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
+        }
+      ],
+      "description": "HKDF-SHA256 with a 32-byte key, 1 KiB chunks, three chunks."
+    },
+    {
+      "name": "hkdf-full-final",
+      "valid": true,
+      "file": "hkdf-full-final.fcx",
+      "plaintext": "hkdf-full-final.plain",
+      "kdf": "hkdf-sha256",
+      "chunk_size": 1024,
+      "plaintext_len": 2048,
+      "secrets": [
+        {
+          "kind": "key",
+          "hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
+        }
+      ],
+      "description": "HKDF, two full 1 KiB chunks; the second is the final one."
+    },
+    {
+      "name": "hkdf-empty",
+      "valid": true,
+      "file": "hkdf-empty.fcx",
+      "plaintext": "hkdf-empty.plain",
+      "kdf": "hkdf-sha256",
+      "chunk_size": 1024,
+      "plaintext_len": 0,
+      "secrets": [
+        {
+          "kind": "key",
+          "hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
+        }
+      ],
+      "description": "HKDF, empty plaintext."
+    },
+    {
+      "name": "hkdf-default-chunk",
+      "valid": true,
+      "file": "hkdf-default-chunk.fcx",
+      "plaintext": "hkdf-default-chunk.plain",
+      "kdf": "hkdf-sha256",
+      "chunk_size": 65536,
+      "plaintext_len": 65636,
+      "secrets": [
+        {
+          "kind": "key",
+          "hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
+        }
+      ],
+      "description": "HKDF with the default 64 KiB chunk size: one full chunk and a 100-byte final chunk."
+    },
+    {
+      "name": "bad-empty-file",
+      "valid": false,
+      "file": "bad-empty-file.fcx",
+      "kdf": "hkdf-sha256",
+      "secret": {
+        "kind": "key",
+        "hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
+      },
+      "reject_at": "header",
+      "description": "Zero-length file."
+    },
+    {
+      "name": "bad-truncated-header",
+      "valid": false,
+      "file": "bad-truncated-header.fcx",
+      "kdf": "hkdf-sha256",
+      "secret": {
+        "kind": "key",
+        "hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
+      },
+      "reject_at": "header",
+      "description": "Cut off in the middle of the header."
+    },
+    {
+      "name": "bad-magic",
+      "valid": false,
+      "file": "bad-magic.fcx",
+      "kdf": "hkdf-sha256",
+      "secret": {
+        "kind": "key",
+        "hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
+      },
+      "reject_at": "header",
+      "description": "Magic is not \"FCX1\"."
+    },
+    {
+      "name": "bad-version",
+      "valid": false,
+      "file": "bad-version.fcx",
+      "kdf": "hkdf-sha256",
+      "secret": {
+        "kind": "key",
+        "hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
+      },
+      "reject_at": "header",
+      "description": "Version byte 2 (only 1 exists)."
+    },
+    {
+      "name": "bad-settings-len",
+      "valid": false,
+      "file": "bad-settings-len.fcx",
+      "kdf": "hkdf-sha256",
+      "secret": {
+        "kind": "key",
+        "hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
+      },
+      "reject_at": "header",
+      "description": "settings_len 1025, above the 1024-byte cap."
+    },
+    {
+      "name": "bad-chunk-size-1023",
+      "valid": false,
+      "file": "bad-chunk-size-1023.fcx",
+      "kdf": "hkdf-sha256",
+      "secret": {
+        "kind": "key",
+        "hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
+      },
+      "reject_at": "header",
+      "description": "chunk_size 1023, below the 1 KiB minimum."
+    },
+    {
+      "name": "bad-chunk-size-16777217",
+      "valid": false,
+      "file": "bad-chunk-size-16777217.fcx",
+      "kdf": "hkdf-sha256",
+      "secret": {
+        "kind": "key",
+        "hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
+      },
+      "reject_at": "header",
+      "description": "chunk_size 16777217, above the 16 MiB maximum."
+    },
+    {
+      "name": "bad-kdf-unknown-kdf",
+      "valid": false,
+      "file": "bad-kdf-unknown-kdf.fcx",
+      "kdf": "unknown (4)",
+      "secret": {
+        "kind": "key",
+        "hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
+      },
+      "reject_at": "kdf",
+      "description": "Unknown KDF id 4. Must be refused without running the KDF."
+    },
+    {
+      "name": "bad-kdf-hkdf-settings",
+      "valid": false,
+      "file": "bad-kdf-hkdf-settings.fcx",
+      "kdf": "hkdf-sha256",
+      "secret": {
+        "kind": "key",
+        "hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
+      },
+      "reject_at": "kdf",
+      "description": "HKDF with a non-empty settings field. Must be refused without running the KDF."
+    },
+    {
+      "name": "bad-kdf-argon2id-settings-len",
+      "valid": false,
+      "file": "bad-kdf-argon2id-settings-len.fcx",
+      "kdf": "argon2id",
+      "secret": {
+        "kind": "passphrase",
+        "utf8": "correct horse battery staple"
+      },
+      "reject_at": "kdf",
+      "description": "Argon2id settings of 8 bytes instead of 9. Must be refused without running the KDF."
+    },
+    {
+      "name": "bad-kdf-argon2id-memory",
+      "valid": false,
+      "file": "bad-kdf-argon2id-memory.fcx",
+      "kdf": "argon2id",
+      "secret": {
+        "kind": "passphrase",
+        "utf8": "correct horse battery staple"
+      },
+      "reject_at": "kdf",
+      "description": "Argon2id memory 4 GiB + 1 KiB, above the 4 GiB cap. Must be refused without running the KDF."
+    },
+    {
+      "name": "bad-kdf-argon2id-iterations",
+      "valid": false,
+      "file": "bad-kdf-argon2id-iterations.fcx",
+      "kdf": "argon2id",
+      "secret": {
+        "kind": "passphrase",
+        "utf8": "correct horse battery staple"
+      },
+      "reject_at": "kdf",
+      "description": "Argon2id iterations 17, above the cap of 16. Must be refused without running the KDF."
+    },
+    {
+      "name": "bad-kdf-argon2id-lanes",
+      "valid": false,
+      "file": "bad-kdf-argon2id-lanes.fcx",
+      "kdf": "argon2id",
+      "secret": {
+        "kind": "passphrase",
+        "utf8": "correct horse battery staple"
+      },
+      "reject_at": "kdf",
+      "description": "Argon2id parallelism 17, above the cap of 16. Must be refused without running the KDF."
+    },
+    {
+      "name": "bad-kdf-argon2id-zero-lanes",
+      "valid": false,
+      "file": "bad-kdf-argon2id-zero-lanes.fcx",
+      "kdf": "argon2id",
+      "secret": {
+        "kind": "passphrase",
+        "utf8": "correct horse battery staple"
+      },
+      "reject_at": "kdf",
+      "description": "Argon2id parallelism 0. Must be refused without running the KDF."
+    },
+    {
+      "name": "bad-kdf-argon2id-total-work",
+      "valid": false,
+      "file": "bad-kdf-argon2id-total-work.fcx",
+      "kdf": "argon2id",
+      "secret": {
+        "kind": "passphrase",
+        "utf8": "correct horse battery staple"
+      },
+      "reject_at": "kdf",
+      "description": "Argon2id 2 GiB x 9 iterations = 18 GiB of work, above the 16 GiB cap. Must be refused without running the KDF."
+    },
+    {
+      "name": "bad-kdf-scrypt-settings-len",
+      "valid": false,
+      "file": "bad-kdf-scrypt-settings-len.fcx",
+      "kdf": "scrypt",
+      "secret": {
+        "kind": "passphrase",
+        "utf8": "correct horse battery staple"
+      },
+      "reject_at": "kdf",
+      "description": "scrypt settings of 10 bytes instead of 9. Must be refused without running the KDF."
+    },
+    {
+      "name": "bad-kdf-scrypt-log2n",
+      "valid": false,
+      "file": "bad-kdf-scrypt-log2n.fcx",
+      "kdf": "scrypt",
+      "secret": {
+        "kind": "passphrase",
+        "utf8": "correct horse battery staple"
+      },
+      "reject_at": "kdf",
+      "description": "scrypt log2(N) 23, above the cap of 22. Must be refused without running the KDF."
+    },
+    {
+      "name": "bad-kdf-scrypt-r",
+      "valid": false,
+      "file": "bad-kdf-scrypt-r.fcx",
+      "kdf": "scrypt",
+      "secret": {
+        "kind": "passphrase",
+        "utf8": "correct horse battery staple"
+      },
+      "reject_at": "kdf",
+      "description": "scrypt r 33, above the cap of 32. Must be refused without running the KDF."
+    },
+    {
+      "name": "bad-kdf-scrypt-p",
+      "valid": false,
+      "file": "bad-kdf-scrypt-p.fcx",
+      "kdf": "scrypt",
+      "secret": {
+        "kind": "passphrase",
+        "utf8": "correct horse battery staple"
+      },
+      "reject_at": "kdf",
+      "description": "scrypt p 17, above the cap of 16. Must be refused without running the KDF."
+    },
+    {
+      "name": "bad-kdf-scrypt-total-work",
+      "valid": false,
+      "file": "bad-kdf-scrypt-total-work.fcx",
+      "kdf": "scrypt",
+      "secret": {
+        "kind": "passphrase",
+        "utf8": "correct horse battery staple"
+      },
+      "reject_at": "kdf",
+      "description": "scrypt 4 GiB x p=5 = 20 GiB of work, above the 16 GiB cap. Must be refused without running the KDF."
+    },
+    {
+      "name": "bad-wrong-key",
+      "valid": false,
+      "file": "bad-wrong-key.fcx",
+      "kdf": "hkdf-sha256",
+      "secret": {
+        "kind": "key",
+        "hex": "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20"
+      },
+      "reject_at": "key",
+      "description": "A valid file opened with the wrong key."
+    },
+    {
+      "name": "bad-salt-bit",
+      "valid": false,
+      "file": "bad-salt-bit.fcx",
+      "kdf": "hkdf-sha256",
+      "secret": {
+        "kind": "key",
+        "hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
+      },
+      "reject_at": "key",
+      "description": "One bit of the salt flipped."
+    },
+    {
+      "name": "bad-wrapped-key-bit",
+      "valid": false,
+      "file": "bad-wrapped-key-bit.fcx",
+      "kdf": "hkdf-sha256",
+      "secret": {
+        "kind": "key",
+        "hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
+      },
+      "reject_at": "key",
+      "description": "One bit of the wrapped file key's tag flipped."
+    },
+    {
+      "name": "bad-kdf-id-swapped",
+      "valid": false,
+      "file": "bad-kdf-id-swapped.fcx",
+      "kdf": "scrypt",
+      "secret": {
+        "kind": "passphrase",
+        "utf8": "correct horse battery staple"
+      },
+      "reject_at": "key",
+      "description": "KDF id and settings rewritten to scrypt: the key block AAD no longer matches."
+    },
+    {
+      "name": "bad-argon2id-settings-changed",
+      "valid": false,
+      "file": "bad-argon2id-settings-changed.fcx",
+      "kdf": "argon2id",
+      "secret": {
+        "kind": "passphrase",
+        "utf8": "correct horse battery staple"
+      },
+      "reject_at": "key",
+      "description": "Argon2id iterations changed from 2 to 3 (still within the caps): the derived key and the key block AAD both change, so the right passphrase is rejected."
+    },
+    {
+      "name": "bad-passphrase",
+      "valid": false,
+      "file": "bad-passphrase.fcx",
+      "kdf": "argon2id",
+      "secret": {
+        "kind": "passphrase",
+        "utf8": "correct horse battery staple!"
+      },
+      "reject_at": "key",
+      "description": "A valid file opened with the wrong passphrase."
+    },
+    {
+      "name": "bad-nonce-prefix-bit",
+      "valid": false,
+      "file": "bad-nonce-prefix-bit.fcx",
+      "kdf": "hkdf-sha256",
+      "secret": {
+        "kind": "key",
+        "hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
+      },
+      "reject_at": "body",
+      "description": "One bit of the nonce prefix flipped (it is in every chunk's AAD and nonce)."
+    },
+    {
+      "name": "bad-chunk-size-changed",
+      "valid": false,
+      "file": "bad-chunk-size-changed.fcx",
+      "kdf": "hkdf-sha256",
+      "secret": {
+        "kind": "key",
+        "hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
+      },
+      "reject_at": "body",
+      "description": "chunk_size changed from 1024 to 2048 (still valid): it is in the chunk AAD."
+    },
+    {
+      "name": "bad-ciphertext-bit",
+      "valid": false,
+      "file": "bad-ciphertext-bit.fcx",
+      "kdf": "hkdf-sha256",
+      "secret": {
+        "kind": "key",
+        "hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
+      },
+      "reject_at": "body",
+      "description": "One bit of chunk 1's ciphertext flipped."
+    },
+    {
+      "name": "bad-tag-bit",
+      "valid": false,
+      "file": "bad-tag-bit.fcx",
+      "kdf": "hkdf-sha256",
+      "secret": {
+        "kind": "key",
+        "hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
+      },
+      "reject_at": "body",
+      "description": "One bit of the final chunk's tag flipped."
+    },
+    {
+      "name": "bad-truncated-at-chunk-boundary",
+      "valid": false,
+      "file": "bad-truncated-at-chunk-boundary.fcx",
+      "kdf": "hkdf-sha256",
+      "secret": {
+        "kind": "key",
+        "hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
+      },
+      "reject_at": "body",
+      "description": "Final chunk removed: chunk 1 is now last but carries the not-last flag."
+    },
+    {
+      "name": "bad-truncated-mid-chunk",
+      "valid": false,
+      "file": "bad-truncated-mid-chunk.fcx",
+      "kdf": "hkdf-sha256",
+      "secret": {
+        "kind": "key",
+        "hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
+      },
+      "reject_at": "body",
+      "description": "Last 100 bytes cut off."
+    },
+    {
+      "name": "bad-no-chunks",
+      "valid": false,
+      "file": "bad-no-chunks.fcx",
+      "kdf": "hkdf-sha256",
+      "secret": {
+        "kind": "key",
+        "hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
+      },
+      "reject_at": "body",
+      "description": "Header only: even an empty plaintext has one chunk."
+    },
+    {
+      "name": "bad-reordered-chunks",
+      "valid": false,
+      "file": "bad-reordered-chunks.fcx",
+      "kdf": "hkdf-sha256",
+      "secret": {
+        "kind": "key",
+        "hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
+      },
+      "reject_at": "body",
+      "description": "Chunks 0 and 1 swapped."
+    },
+    {
+      "name": "bad-trailing-byte",
+      "valid": false,
+      "file": "bad-trailing-byte.fcx",
+      "kdf": "hkdf-sha256",
+      "secret": {
+        "kind": "key",
+        "hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
+      },
+      "reject_at": "body",
+      "description": "One byte appended after a full-size final chunk."
+    },
+    {
+      "name": "bad-trailing-chunk",
+      "valid": false,
+      "file": "bad-trailing-chunk.fcx",
+      "kdf": "hkdf-sha256",
+      "secret": {
+        "kind": "key",
+        "hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
+      },
+      "reject_at": "body",
+      "description": "The final chunk duplicated after itself."
+    },
+    {
+      "name": "bad-trailing-after-partial",
+      "valid": false,
+      "file": "bad-trailing-after-partial.fcx",
+      "kdf": "hkdf-sha256",
+      "secret": {
+        "kind": "key",
+        "hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
+      },
+      "reject_at": "body",
+      "description": "16 bytes appended after a partial final chunk."
+    },
+    {
+      "name": "bad-dropped-first-chunk",
+      "valid": false,
+      "file": "bad-dropped-first-chunk.fcx",
+      "kdf": "hkdf-sha256",
+      "secret": {
+        "kind": "key",
+        "hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
+      },
+      "reject_at": "body",
+      "description": "Chunk 0 removed: the counters no longer line up."
+    }
+  ]
+}

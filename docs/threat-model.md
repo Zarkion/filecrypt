@@ -29,7 +29,7 @@ you make it.
 * There is exactly one wrapped key per file. `rekey` replaces that one key
   block and leaves the encrypted body byte-identical.
 
-The full layout is in the [README](../README.md#format).
+The full layout is in the [format spec](FORMAT.md).
 
 ## Who we defend against
 
@@ -194,12 +194,12 @@ still open:
   identity that works, and there is no option to restrict it.
 * **Secrets are not wiped from memory** (see above). Python can't fully fix
   this; filecrypt does not claim to zero secrets.
-* **Passphrases are not Unicode-normalized.** Passphrases are encoded as
-  UTF-8 exactly as typed. An accented passphrase typed on a system that
-  produces decomposed characters (for example macOS) may give different bytes
-  than the same passphrase typed on Windows, so the file may not open on the
-  other machine. If normalization is added later, it will be done so that
-  existing files still open (see the
-  [compatibility promise](compatibility.md)).
+* **Old files with decomposed accented passphrases.** Passphrases are now
+  encoded as Unicode NFC, so an accented passphrase works the same on every
+  operating system. Files made before that change used the exact bytes typed.
+  filecrypt still tries those, so they keep opening, but a file whose
+  passphrase was typed in decomposed form (as macOS can produce) only opens
+  when it is typed that way again. Rekeying such a file once fixes this (see
+  the [format spec](FORMAT.md#secrets-how-passphrases-and-keys-become-bytes)).
 * **No independent audit.** The review was done as part of development, not
   by an outside party.
