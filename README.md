@@ -25,8 +25,14 @@ Windows a protected ACL granting only your account and SYSTEM (inherited
 folder permissions are removed). If Windows refuses the ACL change, keygen
 warns and the file keeps the folder's permissions.
 
-Nothing is overwritten without `--force`. Output is written to a temp file and
-renamed into place, and partial output is deleted on any failure. `rekey`
+Nothing is overwritten without `--force`. Output is written to a temp file
+(`.<name>.<random>.part` next to the output) and renamed into place, and
+partial output is deleted on any failure. On Windows the temp file is opened
+delete-on-close, so it also disappears if the process is killed or the console
+window is closed. A power cut, or `kill -9` on Linux and macOS, can still leave
+a `.part` file behind, and for `decrypt` it may hold plaintext (owner-only:
+mode 0600, or an owner-only ACL on Windows). The next run that writes the same
+output lists any such leftovers and offers to delete them. `rekey`
 replaces the file in place (use `-o` to write a copy); it only rewrites the
 key block, so the encrypted body stays byte-identical.
 

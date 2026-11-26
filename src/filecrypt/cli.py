@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import argparse
+import glob
 import os
+import secrets
 import shutil
 import sys
 import tempfile
@@ -28,7 +30,9 @@ class AtomicOutput:
     """Write to a temp file next to ``dest``; rename into place on commit.
 
     If ``commit`` is never reached the temp file is deleted, so a failed or
-    interrupted run leaves no partial output. Without ``force`` an existing
+    interrupted run leaves no partial output. On Windows the temp file is
+    opened delete-on-close, so it disappears even if the process is killed;
+    a power cut can still leave one behind (see ``_handle_stale_parts``). Without ``force`` an existing
     ``dest`` is never replaced, even if it appears while we are writing.
     """
 
@@ -37,17 +41,50 @@ class AtomicOutput:
         self.force = force
         self.file = None
         self._tmp: Optional[str] = None
+        self._delete_on_close = False
         self._committed = False
 
     def __enter__(self) -> "AtomicOutput":
         parent = self.dest.absolute().parent
-        fd, self._tmp = tempfile.mkstemp(prefix=f".{self.dest.name}.", suffix=".part", dir=parent)
+        fd = self._open_windows_temp(parent) if os.name == "nt" else None
+        if fd is None:
+            fd, self._tmp = tempfile.mkstemp(prefix=f".{self.dest.name}.", suffix=".part", dir=parent)
+            if os.name == "nt":
+                from . import _winacl
+                _winacl.restrict_to_owner(self._tmp)
         self.file = os.fdopen(fd, "wb")
         return self
+
+    def _open_windows_temp(self, parent: Path) -> Optional[int]:
+        """Open a delete-on-close temp file, so Windows removes it even if we are killed.
+
+        Returns None when delete-on-close can't be cleared on this Windows
+        version; the caller then uses an ordinary owner-only temp file.
+        """
+        from . import _windelete
+        flags = (os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_BINARY | os.O_NOINHERIT
+                 | os.O_TEMPORARY)
+        for _ in range(100):
+            path = str(parent / f".{self.dest.name}.{secrets.token_hex(4)}.part")
+            try:
+                fd = os.open(path, flags, 0o600)
+            except FileExistsError:
+                continue
+            # Probe once that the flag can be toggled, so commit can clear it.
+            if _windelete.set_delete_on_close(fd, True):
+                self._tmp, self._delete_on_close = path, True
+                return fd
+            os.close(fd)  # deleted by Windows on close
+            return None
+        raise FileExistsError(17, "could not create a temporary file", str(parent))
 
     def commit(self) -> None:
         self.file.flush()
         os.fsync(self.file.fileno())
+        if self._delete_on_close:
+            from . import _windelete
+            if not _windelete.set_delete_on_close(self.file.fileno(), False):
+                raise OSError("could not keep the finished output file")
         self.file.close()
         if self.force:
             os.replace(self._tmp, self.dest)
@@ -81,6 +118,30 @@ class AtomicOutput:
 
 def _warn(msg: str) -> None:
     print(f"filecrypt: {msg}", file=sys.stderr)
+
+
+def _stale_parts(dest: Path) -> List[Path]:
+    parent = dest.absolute().parent
+    pattern = f".{glob.escape(dest.name)}.*.part"
+    return sorted(Path(p) for p in glob.glob(str(parent / pattern)))
+
+
+def _handle_stale_parts(dest: Path) -> None:
+    """Offer to delete partial files left by an earlier interrupted run."""
+    stale = _stale_parts(dest)
+    if not stale:
+        return
+    names = ", ".join(p.name for p in stale)
+    _warn(f"found {len(stale)} partial file(s) left by an interrupted run: {names}. "
+          f"They may contain decrypted data.")
+    if _interactive() and _confirm("filecrypt: delete them? [y/N] "):
+        for p in stale:
+            try:
+                p.unlink()
+            except OSError as e:
+                _warn(f"could not delete {p.name}: {e.strerror or e}")
+    elif not _interactive():
+        _warn("delete them yourself if you don't need them")
 
 
 def _open_input(path: str):
@@ -207,6 +268,7 @@ def cmd_encrypt(args) -> None:
     argon = _argon_params(args)
     with _open_input(args.input) as src:
         _check_output(args.input, dest, args.force)
+        _handle_stale_parts(dest)
         secret = sources.resolve_secret(args.key, confirm=True)
         derive, kdf_id, settings = _new_key_block(args, secret, argon)
         with AtomicOutput(dest, args.force) as out:
@@ -227,6 +289,7 @@ def cmd_decrypt(args) -> None:
         header = container.read_header(src)
         dest = Path(args.output) if args.output else _default_plain_name(args.input)
         _check_output(args.input, dest, args.force)
+        _handle_stale_parts(dest)
         file_key = _unlock(header, args.key, args.max_kdf_memory)
         with AtomicOutput(dest, args.force) as out:
             container.decrypt_body(header, file_key, src, out.file)
@@ -249,6 +312,7 @@ def cmd_rekey(args) -> None:
                 raise CLIError(f"{dest} already exists (use --force to overwrite)")
         else:
             dest = Path(args.input)
+        _handle_stale_parts(dest)
         both_prompt = sources.parse_key_spec(args.key)[0] == "prompt" == sources.parse_key_spec(args.new_key)[0]
         if both_prompt:
             _warn("current key:")
