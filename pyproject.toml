@@ -15,7 +15,7 @@ dependencies = ["cryptography>=41"]
 # Only needed when the installed cryptography has no native Argon2id (< 44 or old OpenSSL).
 argon2 = ["argon2-cffi>=21.1"]
 keyring = ["keyring>=24"]
-test = ["pytest>=7"]
+test = ["pytest>=7", "hypothesis>=6"]
 
 [project.scripts]
 filecrypt = "filecrypt.cli:main"
