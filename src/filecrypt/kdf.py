@@ -1,0 +1,264 @@
+"""Key derivation: turn a user secret into the 32-byte key-encryption key.
+
+kdf_id 1  Argon2id   passphrases (default). settings: memory KiB u32, iterations u32, lanes u8
+kdf_id 2  scrypt     passphrase fallback.   settings: log2(N) u8, r u32, p u32
+kdf_id 3  HKDF-SHA256 high-entropy keys (keyfiles, key stores). settings: empty
+
+All settings are little-endian. Settings in a file are read before anything is
+authenticated, so decryption enforces hard caps to stop a crafted file from
+demanding unbounded memory or time.
+"""
+
+from __future__ import annotations
+
+import struct
+from dataclasses import dataclass
+from typing import Literal, Optional, Tuple
+
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.kdf.hkdf import HKDF as _HKDF
+from cryptography.hazmat.primitives.kdf.scrypt import Scrypt
+
+ARGON2ID = 1
+SCRYPT = 2
+HKDF = 3
+
+KDF_NAMES = {ARGON2ID: "argon2id", SCRYPT: "scrypt", HKDF: "hkdf-sha256"}
+
+KEK_LEN = 32
+MIN_KEY_BYTES = 32
+MIN_PASSPHRASE_CHARS = 12
+HKDF_INFO = b"filecrypt v1 key-encryption key"
+
+KIB_PER_MIB = 1024
+ARGON2_MIN_MEMORY_KIB = 19 * KIB_PER_MIB
+ARGON2_MAX_MEMORY_KIB = 4 * 1024 * KIB_PER_MIB
+ARGON2_MIN_ITERATIONS = 2
+ARGON2_MAX_ITERATIONS = 16
+ARGON2_MIN_LANES = 1
+ARGON2_MAX_LANES = 16
+
+SCRYPT_MIN_LOG2N = 14
+SCRYPT_MAX_LOG2N = 22
+SCRYPT_MIN_R = 8
+SCRYPT_MAX_R = 32
+SCRYPT_MAX_P = 16
+SCRYPT_MAX_MEMORY = 4 * 1024**3
+
+
+class KDFError(Exception):
+    """Bad KDF parameters, unsupported KDF, or unsuitable key material."""
+
+
+@dataclass(frozen=True)
+class Secret:
+    """Secret material from a key source.
+
+    ``kind`` is "passphrase" for human-chosen text (prompt, env, stdin) and
+    "key" for random key material (keyfiles, key stores).
+    """
+    value: bytes
+    kind: Literal["passphrase", "key"]
+
+    def __repr__(self) -> str:  # never leak the value into logs/tracebacks
+        return f"Secret(kind={self.kind!r}, len={len(self.value)})"
+
+
+@dataclass(frozen=True)
+class Argon2Params:
+    memory_kib: int
+    iterations: int
+    parallelism: int
+
+    _FMT = "<IIB"
+
+    @classmethod
+    def default(cls) -> "Argon2Params":
+        return cls(64 * KIB_PER_MIB, 3, 4)
+
+    @classmethod
+    def from_cli(cls, memory_mib: Optional[int] = None, iterations: Optional[int] = None,
+                 parallelism: Optional[int] = None) -> "Argon2Params":
+        d = cls.default()
+        return cls(
+            d.memory_kib if memory_mib is None else memory_mib * KIB_PER_MIB,
+            d.iterations if iterations is None else iterations,
+            d.parallelism if parallelism is None else parallelism,
+        )
+
+    def encode(self) -> bytes:
+        return struct.pack(self._FMT, self.memory_kib, self.iterations, self.parallelism)
+
+    @classmethod
+    def decode(cls, raw: bytes) -> "Argon2Params":
+        if len(raw) != struct.calcsize(cls._FMT):
+            raise KDFError("malformed Argon2id settings")
+        return cls(*struct.unpack(cls._FMT, raw))
+
+    def check_caps(self) -> None:
+        if self.memory_kib > ARGON2_MAX_MEMORY_KIB:
+            raise KDFError("Argon2id memory above the 4 GiB limit")
+        if self.iterations > ARGON2_MAX_ITERATIONS:
+            raise KDFError(f"Argon2id iterations above the limit of {ARGON2_MAX_ITERATIONS}")
+        if self.parallelism > ARGON2_MAX_LANES:
+            raise KDFError(f"Argon2id parallelism above the limit of {ARGON2_MAX_LANES}")
+        # Argon2 itself requires memory >= 8 KiB per lane and at least one lane.
+        if self.parallelism < 1 or self.iterations < 1 or self.memory_kib < 8 * self.parallelism:
+            raise KDFError("invalid Argon2id settings")
+
+    def check_for_encrypt(self) -> None:
+        if self.memory_kib < ARGON2_MIN_MEMORY_KIB:
+            raise KDFError("Argon2id memory must be at least 19 MiB")
+        if self.iterations < ARGON2_MIN_ITERATIONS:
+            raise KDFError(f"Argon2id iterations must be at least {ARGON2_MIN_ITERATIONS}")
+        if self.parallelism < ARGON2_MIN_LANES:
+            raise KDFError("Argon2id parallelism must be at least 1")
+        self.check_caps()
+
+
+@dataclass(frozen=True)
+class ScryptParams:
+    log2n: int
+    r: int
+    p: int
+
+    _FMT = "<BII"
+
+    @classmethod
+    def default(cls) -> "ScryptParams":
+        return cls(16, 8, 1)  # 64 MiB, matching the Argon2id default
+
+    def encode(self) -> bytes:
+        return struct.pack(self._FMT, self.log2n, self.r, self.p)
+
+    @classmethod
+    def decode(cls, raw: bytes) -> "ScryptParams":
+        if len(raw) != struct.calcsize(cls._FMT):
+            raise KDFError("malformed scrypt settings")
+        return cls(*struct.unpack(cls._FMT, raw))
+
+    @property
+    def memory_bytes(self) -> int:
+        return 128 * self.r * (1 << self.log2n)
+
+    def check_caps(self) -> None:
+        if not 1 <= self.log2n <= SCRYPT_MAX_LOG2N:
+            raise KDFError("scrypt N out of range")
+        if not 1 <= self.r <= SCRYPT_MAX_R or not 1 <= self.p <= SCRYPT_MAX_P:
+            raise KDFError("scrypt r or p out of range")
+        if self.memory_bytes > SCRYPT_MAX_MEMORY:
+            raise KDFError("scrypt memory above the 4 GiB limit")
+
+    def check_for_encrypt(self) -> None:
+        if self.log2n < SCRYPT_MIN_LOG2N or self.r < SCRYPT_MIN_R:
+            raise KDFError("scrypt settings below the minimum (N=2^14, r=8)")
+        self.check_caps()
+
+
+# --- Argon2id backends -------------------------------------------------------
+
+def _native_argon2_available() -> bool:
+    try:
+        from cryptography.hazmat.primitives.kdf.argon2 import Argon2id
+        Argon2id(salt=b"\x00" * 16, length=32, iterations=1, lanes=1, memory_cost=8).derive(b"x")
+        return True
+    except Exception:
+        return False
+
+
+def _cffi_argon2_available() -> bool:
+    try:
+        import argon2.low_level  # noqa: F401
+        return True
+    except ImportError:
+        return False
+
+
+def argon2_available() -> bool:
+    return _native_argon2_available() or _cffi_argon2_available()
+
+
+def _argon2_native(secret: bytes, salt: bytes, p: Argon2Params) -> bytes:
+    from cryptography.hazmat.primitives.kdf.argon2 import Argon2id
+    return Argon2id(salt=salt, length=KEK_LEN, iterations=p.iterations,
+                    lanes=p.parallelism, memory_cost=p.memory_kib).derive(secret)
+
+
+def _argon2_cffi(secret: bytes, salt: bytes, p: Argon2Params) -> bytes:
+    from argon2.low_level import Type, hash_secret_raw
+    return hash_secret_raw(secret, salt, time_cost=p.iterations, memory_cost=p.memory_kib,
+                           parallelism=p.parallelism, hash_len=KEK_LEN, type=Type.ID)
+
+
+def _argon2(secret: bytes, salt: bytes, p: Argon2Params) -> bytes:
+    if _native_argon2_available():
+        return _argon2_native(secret, salt, p)
+    if _cffi_argon2_available():
+        return _argon2_cffi(secret, salt, p)
+    raise KDFError("Argon2id is unavailable: upgrade cryptography (>= 44) "
+                   "or install argon2-cffi (pip install filecrypt[argon2])")
+
+
+# --- public API --------------------------------------------------------------
+
+def derive_kek(kdf_id: int, settings: bytes, salt: bytes, secret: bytes) -> bytes:
+    """Derive the KEK. Settings are validated against decrypt-time caps."""
+    if kdf_id == ARGON2ID:
+        p = Argon2Params.decode(settings)
+        p.check_caps()
+        return _argon2(secret, salt, p)
+    if kdf_id == SCRYPT:
+        p = ScryptParams.decode(settings)
+        p.check_caps()
+        return Scrypt(salt=salt, length=KEK_LEN, n=1 << p.log2n, r=p.r, p=p.p).derive(secret)
+    if kdf_id == HKDF:
+        if settings:
+            raise KDFError("malformed HKDF settings")
+        if len(secret) < MIN_KEY_BYTES:
+            raise KDFError(f"this file was encrypted with a key; keys must be at least "
+                           f"{MIN_KEY_BYTES} bytes")
+        return _HKDF(algorithm=hashes.SHA256(), length=KEK_LEN, salt=salt,
+                     info=HKDF_INFO).derive(secret)
+    raise KDFError(f"unknown KDF id {kdf_id}")
+
+
+def select_kdf(secret: Secret, *, kdf: Optional[str] = None,
+               argon: Optional[Argon2Params] = None,
+               scrypt: Optional[ScryptParams] = None,
+               keyfile_is_passphrase: bool = False) -> Tuple[int, bytes]:
+    """Choose the KDF and its settings for encrypting with ``secret``."""
+    treat_as_key = secret.kind == "key" and not keyfile_is_passphrase
+    if treat_as_key:
+        if len(secret.value) < MIN_KEY_BYTES:
+            raise KDFError(f"key is {len(secret.value)} bytes; keys must be at least "
+                           f"{MIN_KEY_BYTES} bytes (use --keyfile-is-passphrase to "
+                           f"treat it as a passphrase)")
+        return HKDF, b""
+
+    if kdf not in (None, "argon2id", "scrypt"):
+        raise KDFError(f"unknown KDF {kdf!r} (choose argon2id or scrypt)")
+    if kdf is None:
+        kdf = "argon2id" if argon2_available() else "scrypt"
+    if kdf == "argon2id":
+        if not argon2_available():
+            raise KDFError("Argon2id is unavailable: upgrade cryptography (>= 44) "
+                           "or install argon2-cffi (pip install filecrypt[argon2])")
+        p = argon or Argon2Params.default()
+        p.check_for_encrypt()
+        return ARGON2ID, p.encode()
+    sp = scrypt or ScryptParams.default()
+    sp.check_for_encrypt()
+    return SCRYPT, sp.encode()
+
+
+def passphrase_warning(secret: Secret) -> Optional[str]:
+    if secret.kind != "passphrase":
+        return None
+    try:
+        n = len(secret.value.decode("utf-8"))
+    except UnicodeDecodeError:
+        n = len(secret.value)
+    if n < MIN_PASSPHRASE_CHARS:
+        return (f"warning: passphrase is only {n} characters; "
+                f"{MIN_PASSPHRASE_CHARS} or more is recommended")
+    return None
