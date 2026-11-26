@@ -115,9 +115,11 @@ Other user accounts on the same computer are partly in scope:
   file is created. If Windows can't create it that way, keygen restricts the
   new file before writing the key, and if that fails too it warns and the
   file keeps the folder's permissions.
-* Decryption temp files (`.<name>.<random>.part`) are owner-only on Linux and
-  macOS. On Windows they are opened delete-on-close but are not yet reliably
-  owner-only (see Known limitations).
+* Output temp files (`.<name>.<random>.part`), which hold plaintext while
+  decrypting, are owner-only: mode 0600 on Linux and macOS, and on Windows
+  the same protected ACL as keyfiles, applied as the file is created. On
+  Windows they are also opened delete-on-close. The finished output keeps
+  these permissions when it is renamed into place.
 * `env:` passphrases can be read by other processes running as the same
   user (and by administrators). Prefer `prompt`, a keyfile or a key store.
 * An administrator or root user can read anything; filecrypt cannot defend
@@ -177,14 +179,6 @@ An internal security review of v1 found no critical or high-severity issues.
 The medium and most low findings (M1-M3, L1-L4) are fixed on `main`. These are
 still open:
 
-* **Decryption temp files on Windows are not yet owner-only.** The usual
-  delete-on-close `.part` file keeps the folder's inherited ACL, and the
-  fallback `.part` file gets the owner-only ACL only just after it is
-  created, so a local user who can read the folder could open it and read
-  the plaintext as it is written (Windows checks access only when a file is
-  opened). Keyfiles no longer have this problem: `keygen` creates them with
-  the ACL already applied. Until `.part` files do the same, decrypt into a
-  folder only you can read, such as your user profile.
 * **"Refuse to replace" in the OS keyring is check-then-set.** OS keyrings
   have no create-only write. `keygen --store keyring:...` reads the entry back
   after writing it and reports an error if another program changed it in
