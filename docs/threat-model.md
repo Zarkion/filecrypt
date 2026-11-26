@@ -111,11 +111,13 @@ is only found the next time you decrypt.
 Other user accounts on the same computer are partly in scope:
 
 * Keyfiles from `keygen` are created owner-only: mode 0600 on Linux and macOS,
-  and a protected ACL for your account and SYSTEM on Windows. If Windows
-  refuses the ACL change, keygen warns and the file keeps the folder's
-  permissions.
-* Decryption temp files (`.<name>.<random>.part`) are owner-only too, and on
-  Windows they are opened delete-on-close.
+  and on Windows a protected ACL for your account and SYSTEM, applied as the
+  file is created. If Windows can't create it that way, keygen restricts the
+  new file before writing the key, and if that fails too it warns and the
+  file keeps the folder's permissions.
+* Decryption temp files (`.<name>.<random>.part`) are owner-only on Linux and
+  macOS. On Windows they are opened delete-on-close but are not yet reliably
+  owner-only (see Known limitations).
 * `env:` passphrases can be read by other processes running as the same
   user (and by administrators). Prefer `prompt`, a keyfile or a key store.
 * An administrator or root user can read anything; filecrypt cannot defend
@@ -175,14 +177,14 @@ An internal security review of v1 found no critical or high-severity issues.
 The medium and most low findings (M1-M3, L1-L4) are fixed on `main`. These are
 still open:
 
-* **Keyfile ACL race on Windows.** `keygen` sets the owner-only ACL just
-  after creating the keyfile, before writing the key. In that moment, a local
-  user who can read the folder could open the still-empty file and keep the
-  handle, then read the key once it's written, because Windows checks access
-  only when a file is opened. The same applies to the fallback `.part` file
-  used when delete-on-close isn't available. The fix is to create the file
-  with the ACL already applied. Until then, keep keyfiles in a folder only
-  you can read, such as your user profile.
+* **Decryption temp files on Windows are not yet owner-only.** The usual
+  delete-on-close `.part` file keeps the folder's inherited ACL, and the
+  fallback `.part` file gets the owner-only ACL only just after it is
+  created, so a local user who can read the folder could open it and read
+  the plaintext as it is written (Windows checks access only when a file is
+  opened). Keyfiles no longer have this problem: `keygen` creates them with
+  the ACL already applied. Until `.part` files do the same, decrypt into a
+  folder only you can read, such as your user profile.
 * **Azure Key Vault version is not validated** (`azkv:VAULT/SECRET/VERSION`).
   Only an empty version is rejected; it should be checked against Key Vault's
   32-hex-character format before reaching the SDK.

@@ -53,21 +53,17 @@ def write_keyfile(path: Union[str, Path], data: bytes, *, force: bool = False) -
 
     Without ``force`` the file is created exclusively and an existing file is
     never touched. With ``force`` a temp file is written and renamed over it.
-    On Windows, where mode bits don't apply, the new file gets a protected
-    DACL granting only the current user and SYSTEM, set before any key bytes
-    are written. If that fails a warning is printed and the file keeps the
-    folder's inherited ACL.
+    On Windows, where mode bits don't apply, the file is created with a
+    protected DACL granting only the current user and SYSTEM, so it is never
+    readable by anyone else, even for an instant. If that can't be done the
+    file is created normally and restricted before any key bytes are written;
+    if that fails too a warning is printed and the file keeps the folder's
+    inherited ACL.
     """
     path = Path(path)
-    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0)
     target = path if not force else path.with_name(f".{path.name}.{secrets.token_hex(6)}.tmp")
-    fd = os.open(target, flags, 0o600)
+    fd = _create_exclusive(target, path)
     try:
-        if os.name == "nt":
-            from . import _winacl
-            if not _winacl.restrict_to_owner(target):
-                print(f"filecrypt: warning: could not restrict {path} to your user account; "
-                      f"it has the folder's permissions", file=sys.stderr)
         with os.fdopen(fd, "wb") as f:
             f.write(data)
             f.flush()
@@ -80,3 +76,25 @@ def write_keyfile(path: Union[str, Path], data: bytes, *, force: bool = False) -
         except OSError:
             pass
         raise
+
+
+def _create_exclusive(target: Path, shown: Path) -> int:
+    """Create ``target`` (which must not exist) owner-only and return its fd."""
+    if os.name != "nt":
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+        return os.open(target, flags, 0o600)
+    from . import _winacl
+    fd = _winacl.create_owner_only(target)
+    if fd is not None:
+        return fd
+    fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_BINARY, 0o600)
+    try:
+        restricted = _winacl.restrict_to_owner(target)
+    except BaseException:
+        os.close(fd)
+        os.unlink(target)
+        raise
+    if not restricted:
+        print(f"filecrypt: warning: could not restrict {shown} to your user account; "
+              f"it has the folder's permissions", file=sys.stderr)
+    return fd

@@ -1,17 +1,24 @@
 """Owner-only file permissions on Windows.
 
 POSIX mode bits don't exist on Windows: ``os.open(path, ..., 0o600)`` only
-controls the read-only flag, and the file inherits its folder's ACL. These
-helpers replace a file's DACL with a protected one (no inheritance) that
-grants full control to the current user and SYSTEM only.
+controls the read-only flag, and the file inherits its folder's ACL. The
+owner-only DACL used here is protected (no inheritance) and grants full
+control to the current user and SYSTEM only.
+
+:func:`create_owner_only` creates a new file with that DACL already in place,
+so there is no moment when the file exists with the folder's ACL and another
+account could open it. :func:`restrict_to_owner` replaces the DACL of an
+existing file and is the fallback when that isn't possible.
 """
 
 from __future__ import annotations
 
 import ctypes
+import msvcrt
 import os
 import subprocess
 from ctypes import wintypes
+from typing import Optional
 
 _advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
 _kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
@@ -21,6 +28,24 @@ _TOKEN_USER_CLASS = 1
 _DACL_SECURITY_INFORMATION = 0x00000004
 _PROTECTED_DACL_SECURITY_INFORMATION = 0x80000000
 _SDDL_REVISION_1 = 1
+
+_GENERIC_READ = 0x80000000
+_GENERIC_WRITE = 0x40000000
+_DELETE = 0x00010000
+_FILE_SHARE_READ = 0x1
+_FILE_SHARE_WRITE = 0x2
+_CREATE_NEW = 1
+_FILE_ATTRIBUTE_NORMAL = 0x80
+_FILE_ATTRIBUTE_TEMPORARY = 0x100
+_FILE_FLAG_DELETE_ON_CLOSE = 0x04000000
+_INVALID_HANDLE_VALUE = wintypes.HANDLE(-1).value
+
+
+class _SecurityAttributes(ctypes.Structure):
+    _fields_ = [("nLength", wintypes.DWORD),
+                ("lpSecurityDescriptor", ctypes.c_void_p),
+                ("bInheritHandle", wintypes.BOOL)]
+
 
 _advapi32.OpenProcessToken.argtypes = [wintypes.HANDLE, wintypes.DWORD, ctypes.POINTER(wintypes.HANDLE)]
 _advapi32.GetTokenInformation.argtypes = [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p,
@@ -34,6 +59,10 @@ _advapi32.GetFileSecurityW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, ctypes.
 _advapi32.ConvertSecurityDescriptorToStringSecurityDescriptorW.argtypes = [
     ctypes.c_void_p, wintypes.DWORD, wintypes.DWORD, ctypes.POINTER(wintypes.LPWSTR),
     ctypes.POINTER(wintypes.ULONG)]
+_kernel32.CreateFileW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD,
+                                  ctypes.POINTER(_SecurityAttributes), wintypes.DWORD,
+                                  wintypes.DWORD, wintypes.HANDLE]
+_kernel32.CreateFileW.restype = wintypes.HANDLE
 _kernel32.GetCurrentProcess.restype = wintypes.HANDLE
 _kernel32.LocalFree.argtypes = [ctypes.c_void_p]
 _kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
@@ -63,12 +92,65 @@ def current_user_sid() -> str:
         _kernel32.CloseHandle(token)
 
 
+def _owner_only_sddl() -> str:
+    return f"D:P(A;;FA;;;{current_user_sid()})(A;;FA;;;SY)"
+
+
+def _owner_only_sd() -> ctypes.c_void_p:
+    """A self-relative security descriptor holding the owner-only DACL.
+
+    The caller frees it with ``LocalFree``.
+    """
+    sd = ctypes.c_void_p()
+    _check(_advapi32.ConvertStringSecurityDescriptorToSecurityDescriptorW(
+        _owner_only_sddl(), _SDDL_REVISION_1, ctypes.byref(sd), None))
+    return sd
+
+
+def create_owner_only(path, *, delete_on_close: bool = False) -> Optional[int]:
+    """Create ``path`` with the owner-only DACL applied as it is created.
+
+    Returns a binary, non-inheritable file descriptor open for reading and
+    writing, like ``os.open(path, O_RDWR | O_CREAT | O_EXCL | O_BINARY |
+    O_NOINHERIT)``. With ``delete_on_close`` the file is also opened like
+    ``O_TEMPORARY``: Windows deletes it when the last handle closes.
+
+    Raises ``FileExistsError`` if ``path`` exists, and ``OSError`` for other
+    failures to create the file. Returns None, without creating anything,
+    when the security descriptor can't be built; callers then fall back to
+    creating the file and calling :func:`restrict_to_owner`.
+    """
+    path = os.fspath(path)
+    try:
+        sd = _owner_only_sd()
+    except OSError:
+        return None
+    try:
+        sa = _SecurityAttributes(ctypes.sizeof(_SecurityAttributes), sd, False)
+        access = _GENERIC_READ | _GENERIC_WRITE
+        attrs = _FILE_ATTRIBUTE_NORMAL
+        if delete_on_close:
+            access |= _DELETE
+            attrs = _FILE_ATTRIBUTE_TEMPORARY | _FILE_FLAG_DELETE_ON_CLOSE
+        handle = _kernel32.CreateFileW(path, access, _FILE_SHARE_READ | _FILE_SHARE_WRITE,
+                                       ctypes.byref(sa), _CREATE_NEW, attrs, None)
+        if handle is None or handle == _INVALID_HANDLE_VALUE:
+            err = ctypes.get_last_error()
+            raise OSError(None, ctypes.FormatError(err), path, err)
+    finally:
+        _kernel32.LocalFree(sd)
+    try:
+        fd = msvcrt.open_osfhandle(handle, 0)  # handle is already non-inheritable
+    except BaseException:
+        _kernel32.CloseHandle(handle)
+        raise
+    msvcrt.setmode(fd, os.O_BINARY)
+    return fd
+
+
 def _set_dacl_ctypes(path: str) -> bool:
     try:
-        sddl = f"D:P(A;;FA;;;{current_user_sid()})(A;;FA;;;SY)"
-        sd = ctypes.c_void_p()
-        _check(_advapi32.ConvertStringSecurityDescriptorToSecurityDescriptorW(
-            sddl, _SDDL_REVISION_1, ctypes.byref(sd), None))
+        sd = _owner_only_sd()
         try:
             _check(_advapi32.SetFileSecurityW(
                 path, _DACL_SECURITY_INFORMATION | _PROTECTED_DACL_SECURITY_INFORMATION, sd))
