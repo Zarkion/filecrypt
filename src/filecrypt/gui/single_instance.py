@@ -170,6 +170,7 @@ def make_server(name: Optional[str] = None, parent: Any = None):
             self.server.setSocketOptions(QtNetwork.QLocalServer.UserAccessOption)
             self.server.newConnection.connect(self._accept)
             self._buffers = {}
+            self._answered = set()
 
         def listen(self) -> bool:
             if self.server.listen(self.name):
@@ -193,6 +194,7 @@ def make_server(name: Optional[str] = None, parent: Any = None):
                     self._read(sock)
 
         def _drop(self, sock, abort: bool = False) -> None:
+            self._answered.discard(sock)
             if self._buffers.pop(sock, None) is None:
                 return          # already handled
             if abort:
@@ -200,7 +202,7 @@ def make_server(name: Optional[str] = None, parent: Any = None):
             sock.deleteLater()
 
         def _read(self, sock) -> None:
-            if sock not in self._buffers:
+            if sock not in self._buffers or sock in self._answered:
                 return
             buf = self._buffers[sock] + bytes(sock.readAll())
             if len(buf) > MAX_REQUEST:
@@ -214,9 +216,11 @@ def make_server(name: Optional[str] = None, parent: Any = None):
             except ProtocolError:
                 self._drop(sock, abort=True)
                 return
+            # Leave closing to the client: on Windows, disconnecting a pipe throws
+            # away bytes the client hasn't read yet, so it would miss the ack.
+            self._answered.add(sock)
             sock.write(ACK)
             sock.flush()
-            sock.disconnectFromServer()
             self.received.emit(mode, paths)
 
     server = Server(name or instance_name(), parent)
