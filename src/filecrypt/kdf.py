@@ -88,8 +88,20 @@ class Secret:
                 object.__setattr__(self, "value", nfc)
 
     def unlock_candidates(self) -> List[bytes]:
-        """Byte strings to try when opening a file: the NFC form, then the original."""
-        return [self.value] if self.unnormalized is None else [self.value, self.unnormalized]
+        """Byte strings to try when opening a file.
+
+        A passphrase gives its NFC form, then the original. A key gives its
+        exact bytes, then (only if it is UTF-8 text that NFC changes) its NFC
+        form: older versions of the desktop window normalized a keyfile used
+        as a password, so files they made that way still open everywhere.
+        """
+        if self.unnormalized is not None:
+            return [self.value, self.unnormalized]
+        if self.kind == "key":
+            nfc = normalize_passphrase(self.value)
+            if nfc != self.value:
+                return [self.value, nfc]
+        return [self.value]
 
     def __repr__(self) -> str:  # never leak the value into logs/tracebacks
         return f"Secret(kind={self.kind!r}, len={len(self.value)})"
