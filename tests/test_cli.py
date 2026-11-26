@@ -436,3 +436,48 @@ def test_python_dash_m_ignores_current_folder(tmp_path):
                          capture_output=True, text=True)
     assert out.returncode == 0, out.stderr
     assert not marker.exists()
+
+
+# --- Mark of the Web ---------------------------------------------------------
+
+@pytest.fixture
+def motw_calls(monkeypatch):
+    calls = []
+    result = {"value": None}
+
+    def fake(src, dest):
+        calls.append((str(src), str(dest)))
+        return result["value"]
+    monkeypatch.setattr(cli._motw, "copy_zone_identifier", fake)
+    return calls, result
+
+
+def test_decrypt_copies_mark_of_the_web(work, keyfile, motw_calls, capsys):
+    calls, _ = motw_calls
+    assert cli.main(["encrypt", "plain.txt", "-o", "out.fcx", "--key", f"file:{keyfile}"]) == 0
+    assert cli.main(["decrypt", "out.fcx", "-o", "back.txt", "--key", f"file:{keyfile}"]) == 0
+    assert calls == [("out.fcx", "back.txt")]
+    assert "mark" not in capsys.readouterr().err
+
+
+def test_decrypt_warns_when_mark_cannot_be_copied(work, keyfile, motw_calls, capsys):
+    _, result = motw_calls
+    result["value"] = False
+    assert cli.main(["encrypt", "plain.txt", "-o", "out.fcx", "--key", f"file:{keyfile}"]) == 0
+    assert cli.main(["decrypt", "out.fcx", "-o", "back.txt", "-q",
+                     "--key", f"file:{keyfile}"]) == 0
+    err = capsys.readouterr().err
+    assert "downloaded from the internet" in err and "back.txt" in err
+
+
+def test_failed_decrypt_does_not_touch_mark(work, keyfile, motw_calls):
+    calls, _ = motw_calls
+    assert cli.main(["encrypt", "plain.txt", "-o", "out.fcx", "--key", f"file:{keyfile}"]) == 0
+    assert cli.main(["keygen", "other.key"]) == 0
+    assert cli.main(["decrypt", "out.fcx", "-o", "back.txt", "--key", "file:other.key"]) == 4
+    assert calls == []
+
+
+def test_cli_uses_the_shared_motw_helper():
+    from filecrypt import _motw
+    assert cli._motw is _motw
