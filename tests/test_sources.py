@@ -73,6 +73,44 @@ def test_file_source_raw_and_base64(tmp_path):
     assert resolve_secret(f"file:{tmp_path / 'b64'}") == Secret(k, "key")
 
 
+def test_file_source_size_cap(tmp_path, monkeypatch):
+    monkeypatch.setattr(sources, "MAX_KEYFILE_BYTES", 64)
+    (tmp_path / "ok").write_bytes(bytes(range(64)))
+    (tmp_path / "big").write_bytes(bytes(range(65)))
+    assert resolve_secret(f"file:{tmp_path / 'ok'}").value == bytes(range(64))
+    with pytest.raises(KeySourceError, match="FILECRYPT_MAX_KEYFILE_MB"):
+        resolve_secret(f"file:{tmp_path / 'big'}")
+
+
+def test_keyfile_cap_env_override(tmp_path, monkeypatch):
+    big = bytes(range(256)) * 4096 + b"x"          # 1 MiB + 1 byte
+    (tmp_path / "big").write_bytes(big)
+    monkeypatch.setattr(sources, "MAX_KEYFILE_BYTES", 1 << 20)
+    with pytest.raises(KeySourceError, match="larger than 1 MiB"):
+        resolve_secret(f"file:{tmp_path / 'big'}")
+    monkeypatch.setenv("FILECRYPT_MAX_KEYFILE_MB", "2")
+    assert resolve_secret(f"file:{tmp_path / 'big'}").value == big
+    for bad in ("0", "lots"):
+        monkeypatch.setenv("FILECRYPT_MAX_KEYFILE_MB", bad)
+        with pytest.raises(KeySourceError, match="FILECRYPT_MAX_KEYFILE_MB"):
+            resolve_secret(f"file:{tmp_path / 'big'}")
+
+
+def test_over_cap_keyfile_decrypts_with_override(tmp_path, monkeypatch):
+    from filecrypt import engine
+    big = bytes(range(256)) * 4096 + b"x"
+    (tmp_path / "big.key").write_bytes(big)
+    (tmp_path / "doc.txt").write_bytes(b"hello")
+    out = engine.encrypt_file(tmp_path / "doc.txt", tmp_path / "doc.fcx", Secret(big, "key"))
+    monkeypatch.setattr(sources, "MAX_KEYFILE_BYTES", 1 << 20)
+    with pytest.raises(KeySourceError):
+        resolve_secret(f"file:{tmp_path / 'big.key'}")
+    monkeypatch.setenv("FILECRYPT_MAX_KEYFILE_MB", "2")
+    key = resolve_secret(f"file:{tmp_path / 'big.key'}")
+    back = engine.decrypt_file(out, tmp_path / "back.txt", key)
+    assert back.read_bytes() == b"hello"
+
+
 def test_file_source_missing(tmp_path):
     with pytest.raises(KeySourceError, match="cannot read"):
         resolve_secret(f"file:{tmp_path / 'nope'}")

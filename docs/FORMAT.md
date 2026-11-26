@@ -123,7 +123,9 @@ KEK = HKDF-SHA256 (RFC 5869) with IKM = the secret bytes, salt = `salt`,
 info = the 31 ASCII bytes `filecrypt v1 key-encryption key`, L = 32.
 
 This is for random key material (keyfiles, key stores), which needs no
-stretching.
+stretching. An encryptor SHOULD NOT use it for key material that looks
+human-made; see "Secrets" below. A decryptor follows the header and MUST NOT
+care how the encryptor chose.
 
 ### Caps for decryption
 
@@ -184,7 +186,14 @@ part of compatibility, so it is specified here.
   start with `fcxkey:v1:` are base64 keys; any other key-store entry is a
   passphrase. A keyfile used with `--keyfile-is-passphrase` goes through the
   passphrase KDF but keeps its exact bytes.
-* Passphrases use kdf_id 1 or 2. Keys use kdf_id 3.
+* Passphrases use kdf_id 1 or 2. Keys use kdf_id 3, except that filecrypt
+  encrypts with the passphrase KDF (keeping the key's exact bytes) when the
+  key material looks human-made: it has fewer than 16 distinct byte values,
+  or it is valid UTF-8 (after an optional BOM) made only of printable
+  characters, tabs and line breaks. A sentence saved in a .txt file is the
+  usual case. Random keys almost never match. Files made earlier with kdf_id 3
+  from such a keyfile still decrypt, because decryption uses the KDF the
+  header names.
 
 ## Key block
 

@@ -6,7 +6,7 @@ import sys
 
 import pytest
 
-from filecrypt import container, engine, sources
+from filecrypt import container, engine, kdf, sources
 from filecrypt.container import AuthenticationError, FormatError
 from filecrypt.engine import (Cancelled, EncryptOptions, ExpensiveKDFError, OutputExistsError,
                               SameFileError)
@@ -118,6 +118,25 @@ def test_same_file_rejected(work):
 def test_missing_input(work):
     with pytest.raises(engine.InputError, match="nope"):
         engine.encrypt_file(work / "nope", work / "nope.fcx", KEY)
+
+
+@pytest.mark.requires_argon2
+def test_text_keyfile_is_stretched_and_old_hkdf_files_still_open(work):
+    text_key = Secret(b"my secret sentence that I saved in notes.txt\n", "key")
+    notes = []
+    engine.encrypt_file(work / "doc.bin", work / "t.fcx", text_key,
+                        options=EncryptOptions(argon=FAST.argon), notify=notes.append)
+    assert engine.inspect_file(work / "t.fcx").kdf_id == ARGON2ID
+    assert any("stretched like a passphrase" in n for n in notes)
+    assert engine.decrypt_file(work / "t.fcx", work / "t.bin", text_key).read_bytes() == DATA
+
+    # A file made before this change used plain HKDF; it must still open.
+    old = work / "old.fcx"
+    with open(work / "doc.bin", "rb") as src, open(old, "wb") as dst:
+        container.encrypt_stream(src, dst, kdf_id=HKDF, settings=b"",
+                                 derive_kek=lambda salt: kdf.derive_kek(HKDF, b"", salt,
+                                                                        text_key.value))
+    assert engine.decrypt_file(old, work / "o.bin", text_key).read_bytes() == DATA
 
 
 def test_wrong_key_leaves_nothing(work):

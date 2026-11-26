@@ -282,7 +282,15 @@ def select_kdf(secret: Secret, *, kdf: Optional[str] = None,
             raise KDFError(f"key is {len(secret.value)} bytes; keys must be at least "
                            f"{MIN_KEY_BYTES} bytes (use --keyfile-is-passphrase to "
                            f"treat it as a passphrase)")
-        return HKDF, b""
+        if not key_looks_human_made(secret.value):
+            return HKDF, b""
+        # Text or a repeating pattern: HKDF alone would let an attacker guess
+        # it billions of times a second, so stretch it like a passphrase.
+        # The header records the KDF, so decryption needs no flag.
+        if notify is not None:
+            notify("notice: this key looks like text or a pattern rather than random "
+                   "bytes, so it is stretched like a passphrase; for a random key use "
+                   "'filecrypt keygen'")
 
     if kdf not in (None, "argon2id", "scrypt"):
         raise KDFError(f"unknown KDF {kdf!r} (choose argon2id or scrypt)")
@@ -301,6 +309,29 @@ def select_kdf(secret: Secret, *, kdf: Optional[str] = None,
     sp = scrypt or ScryptParams.default()
     sp.check_for_encrypt()
     return SCRYPT, sp.encode()
+
+
+#: A random key of 32 or more bytes almost surely holds this many distinct
+#: byte values (32 random bytes average about 30); fewer means a pattern.
+MIN_DISTINCT_KEY_BYTES = 16
+
+
+def key_looks_human_made(value: bytes) -> bool:
+    """True when key material is printable text or has too few distinct bytes.
+
+    Random keys (``keygen`` output, decoded base64 keyfiles, ``fcxkey:v1:``
+    entries) are almost never valid printable UTF-8 and use many distinct
+    byte values, so they keep plain HKDF. A sentence in a .txt file, or a
+    repeated byte, gets the passphrase KDF instead when encrypting.
+    """
+    if len(set(value)) < MIN_DISTINCT_KEY_BYTES:
+        return True
+    try:
+        text = value.decode("utf-8")
+    except UnicodeDecodeError:
+        return False
+    text = text.lstrip("\ufeff")
+    return bool(text) and all(ch.isprintable() or ch in "\t\r\n" for ch in text)
 
 
 def passphrase_warning(secret: Secret) -> Optional[str]:

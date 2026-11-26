@@ -27,6 +27,28 @@ from .keygen import load_key_material, write_keyfile
 ENTRY_POINT_GROUP = "filecrypt.key_sources"
 DEFAULT_SPEC = "prompt"
 
+#: Keyfiles past this size are refused rather than read into memory whole.
+#: Generous, so files already encrypted with a large keyfile (a photo) still open.
+MAX_KEYFILE_BYTES = 64 << 20
+
+KEYFILE_CAP_ENV = "FILECRYPT_MAX_KEYFILE_MB"
+
+
+def _keyfile_cap() -> int:
+    """The keyfile size limit in bytes; FILECRYPT_MAX_KEYFILE_MB raises it."""
+    raw = os.environ.get(KEYFILE_CAP_ENV, "").strip()
+    if not raw:
+        return MAX_KEYFILE_BYTES
+    try:
+        mib = int(raw)
+    except ValueError:
+        raise KeySourceError(f"{KEYFILE_CAP_ENV} must be a whole number of MiB, "
+                             f"not {raw!r}") from None
+    if mib < 1:
+        raise KeySourceError(f"{KEYFILE_CAP_ENV} must be at least 1")
+    return mib << 20
+
+
 _SCHEME_RE = re.compile(r"^[a-z][a-z0-9_-]+$")
 
 
@@ -69,11 +91,16 @@ class FileSource(KeySource):
     def get(self, location: str, *, confirm: bool = False) -> Secret:
         if not location:
             raise KeySourceError("file key source needs a path, e.g. file:my.key")
+        cap = _keyfile_cap()
         try:
             with open(location, "rb") as f:
-                data = f.read()
+                data = f.read(cap + 1)
         except OSError as e:
             raise KeySourceError(f"cannot read keyfile {location}: {e.strerror or e}") from None
+        if len(data) > cap:
+            raise KeySourceError(
+                f"keyfile {location} is larger than {cap / (1 << 20):g} MiB; is it the right "
+                f"file? If it is, set {KEYFILE_CAP_ENV} to its size in MiB or more")
         if not data:
             raise KeySourceError(f"keyfile {location} is empty")
         return Secret(load_key_material(data), "key")

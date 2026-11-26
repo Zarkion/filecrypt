@@ -23,8 +23,13 @@ you make it.
   (KEK). The KEK comes from your secret:
   * passphrases go through **Argon2id** (default 64 MiB, 3 passes, 4 lanes),
     or **scrypt** (default N=2^17, r=8, p=1) when Argon2id isn't available;
-  * keys of at least 32 bytes (keyfiles, `fcxkey:v1:` key-store entries) go
-    through **HKDF-SHA256**.
+  * random keys of at least 32 bytes (keyfiles, `fcxkey:v1:` key-store
+    entries) go through **HKDF-SHA256**. A keyfile that looks human-made
+    (printable text, or a repeating pattern) goes through the passphrase KDF
+    instead, because HKDF alone would let an attacker test billions of
+    guesses a second. Files made before this check, and keyfiles that are
+    neither random nor text (such as a photo someone else may have), get no
+    such protection: use `filecrypt keygen` for keys.
 * Every wrap uses a fresh random 16-byte salt, so every KEK is used once.
 * There is exactly one wrapped key per file. `rekey` replaces that one key
   block and leaves the encrypted body byte-identical; `rekey
