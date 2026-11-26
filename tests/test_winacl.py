@@ -27,7 +27,11 @@ def open_dir(tmp_path):
 def assert_owner_only(path):
     sddl = _winacl.dacl_sddl(str(path))
     assert sddl.startswith("D:P"), sddl          # protected: nothing inherited
-    assert _winacl.current_user_sid() in sddl, sddl
+    sid = _winacl.current_user_sid()
+    # SDDL writes the built-in Administrator account (RID 500) as "LA", not by
+    # its SID. CI runners on GitHub run as that account.
+    owner = ";;;LA)" if sid.endswith("-500") else f";;;{sid})"
+    assert owner in sddl, sddl
     for broad in ("WD", "AU", "BU", "S-1-1-0"):   # Everyone, Authenticated Users, Users
         assert f";;;{broad})" not in sddl, sddl
 
