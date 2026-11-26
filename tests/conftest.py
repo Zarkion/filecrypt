@@ -22,7 +22,27 @@ def pytest_configure(config):
     )
 
 
+# pytest copies each running test's id into the PYTEST_CURRENT_TEST environment
+# variable. Windows caps one variable at 32,767 characters, and an id built from
+# a large parametrized input (say 1 MiB of bytes) froze a Windows CI job instead
+# of failing. Fail collection on every platform instead, with a pointer to the
+# fix: pass short labels through ``ids=`` in ``pytest.mark.parametrize``.
+MAX_TEST_ID_LENGTH = 1000
+
+
+def _check_test_id_lengths(items):
+    long_ids = [item.nodeid for item in items if len(item.nodeid) > MAX_TEST_ID_LENGTH]
+    if long_ids:
+        shown = "\n".join(f"  {nid[:120]}... ({len(nid)} chars)" for nid in long_ids[:5])
+        raise pytest.UsageError(
+            f"{len(long_ids)} test id(s) exceed {MAX_TEST_ID_LENGTH} characters. "
+            "Give the parametrize call short ids= labels, or the run can hang "
+            f"on Windows:\n{shown}"
+        )
+
+
 def pytest_collection_modifyitems(config, items):
+    _check_test_id_lengths(items)
     if kdf.argon2_available():
         return
     skip = pytest.mark.skip(reason=ARGON2_SKIP_REASON)
