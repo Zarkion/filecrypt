@@ -10,6 +10,19 @@ pip install ".[keyring]"      # + OS keyring key source
 pip install ".[argon2]"       # + argon2-cffi, only for cryptography < 44
 ```
 
+**32-bit (x86) and ARM64 Windows:** the newest cryptography releases (49 and
+later) publish no prebuilt wheel for these, so a plain install tries to build
+cryptography from source, which needs Rust and OpenSSL and usually fails. Tell
+pip to use a prebuilt cryptography instead; it then picks the newest release
+that has one (48.0.1 on 32-bit, 46.0.3 on ARM64, as of November 2026):
+
+```
+pip install --only-binary=cryptography .
+```
+
+Both versions include the built-in Argon2id, so nothing else is needed. This
+is the same command CI uses on its 32-bit and ARM64 Windows runners.
+
 ## Usage
 
 ```
