@@ -59,8 +59,15 @@ passphrase instead. Passphrases under 12 characters get a warning.
 scrypt defaults to N=2^17, r=8, p=1 (128 MiB) and encrypt requires N×p ≥ 2^16
 with r ≥ 8. If Argon2id is unavailable (cryptography older than 44 and no
 argon2-cffi), encrypt falls back to scrypt and prints a notice saying so.
-Decryption refuses files whose KDF settings exceed these caps, since they are
-read before anything is authenticated.
+Total work (memory × Argon2id iterations, or memory × scrypt p) is capped at
+16 GiB. Decryption refuses files whose KDF settings exceed these caps, since
+they are read before anything is authenticated.
+
+Before deriving, `decrypt` and `rekey` check the file's KDF cost. If it needs
+more than 1 GiB of memory (or half your RAM, whichever is lower), or more than
+8 times that in total work, filecrypt asks before continuing, and refuses when
+it isn't running interactively. `--max-kdf-memory MIB` sets the limit
+explicitly for scripts; files above it are refused without asking.
 
 ## Format
 

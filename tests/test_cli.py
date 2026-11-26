@@ -282,3 +282,73 @@ def test_scrypt_fallback_notice_on_stderr(work, monkeypatch, capsys):
     assert cli.main(["encrypt", "plain.txt", "--key", "env:FC_PASS"]) == 0
     assert header_of(work / "plain.txt.fcx").kdf_id == SCRYPT
     assert "argon2-cffi" in capsys.readouterr().err
+
+
+# --- L2: confirm before costly KDF settings from an unauthenticated header ------
+
+def make_heavy(path, memory_mib=2048, iterations=2):
+    """Rewrite a file's Argon2id settings in place (the header isn't authenticated)."""
+    blob = bytearray(path.read_bytes())
+    blob[8:17] = Argon2Params(memory_mib * 1024, iterations, 1).encode()
+    path.write_bytes(bytes(blob))
+
+
+@pytest.fixture
+def heavy_file(work):
+    assert cli.main(["encrypt", "plain.txt", "--key", "env:FC_PASS", *FAST]) == 0
+    make_heavy(work / "plain.txt.fcx")
+    return work / "plain.txt.fcx"
+
+
+@pytest.fixture
+def no_derive(monkeypatch):
+    calls = []
+
+    def fake(kdf_id, settings, salt, secret):
+        calls.append(kdf_id)
+        return b"\x00" * 32  # wrong KEK: decrypt then fails authentication
+
+    monkeypatch.setattr(cli.kdf, "derive_kek", fake)
+    return calls
+
+
+def test_heavy_file_refused_when_not_interactive(heavy_file, no_prompt, no_derive, capsys):
+    assert cli.main(["decrypt", str(heavy_file), "-o", "out.txt"]) == 1
+    err = capsys.readouterr().err
+    assert "2048 MiB" in err and "--max-kdf-memory" in err
+    assert no_derive == []
+
+
+def test_heavy_file_refused_above_explicit_limit(heavy_file, no_prompt, no_derive):
+    assert cli.main(["decrypt", str(heavy_file), "-o", "out.txt", "--max-kdf-memory", "1024"]) == 1
+    assert no_derive == []
+
+
+def test_heavy_file_allowed_with_explicit_limit(heavy_file, no_derive):
+    assert cli.main(["decrypt", str(heavy_file), "-o", "out.txt", "--key", "env:FC_PASS",
+                     "--max-kdf-memory", "4096"]) == 1   # fails later: fake KEK
+    assert no_derive == [ARGON2ID]
+
+
+def test_heavy_file_interactive_confirm(heavy_file, no_derive, monkeypatch):
+    monkeypatch.setattr(cli, "_interactive", lambda: True)
+    answers = []
+    monkeypatch.setattr(cli, "_confirm", lambda prompt: answers.append(prompt) or False)
+    assert cli.main(["decrypt", str(heavy_file), "-o", "out.txt", "--key", "env:FC_PASS"]) == 1
+    assert len(answers) == 1 and no_derive == []
+    monkeypatch.setattr(cli, "_confirm", lambda prompt: True)
+    assert cli.main(["decrypt", str(heavy_file), "-o", "out.txt", "--key", "env:FC_PASS"]) == 1
+    assert no_derive == [ARGON2ID]
+
+
+def test_heavy_file_rekey_refused(heavy_file, keyfile, no_derive):
+    assert cli.main(["rekey", str(heavy_file), "--key", "env:FC_PASS",
+                     "--new-key", f"file:{keyfile}"]) == 1
+    assert no_derive == []
+
+
+def test_normal_file_not_questioned(work, monkeypatch):
+    monkeypatch.setattr(cli, "_confirm", lambda prompt: pytest.fail("should not ask"))
+    monkeypatch.setattr(cli, "_interactive", lambda: True)
+    assert cli.main(["encrypt", "plain.txt", "--key", "env:FC_PASS"]) == 0
+    assert cli.main(["decrypt", "plain.txt.fcx", "-o", "b.txt", "--key", "env:FC_PASS"]) == 0

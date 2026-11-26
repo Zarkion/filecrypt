@@ -137,7 +137,42 @@ def _new_key_block(args, secret: kdf.Secret, argon: Optional[Argon2Params]):
     return derive, kdf_id, settings
 
 
-def _unlock(header: container.Header, spec: str) -> bytes:
+def _interactive() -> bool:
+    try:
+        return sys.stdin.isatty() and sys.stderr.isatty()
+    except (AttributeError, ValueError):
+        return False
+
+
+def _confirm(prompt: str) -> bool:
+    print(prompt, end="", file=sys.stderr, flush=True)
+    try:
+        return input().strip().lower() in ("y", "yes")
+    except EOFError:
+        return False
+
+
+def _check_kdf_cost(header: container.Header, max_kdf_memory_mib: Optional[int]) -> None:
+    """Refuse or confirm costly KDF settings before asking for the key.
+
+    The settings come from the unauthenticated header, so a crafted file could
+    otherwise make us burn gigabytes of memory and minutes of CPU.
+    """
+    explicit = max_kdf_memory_mib is not None
+    limit = max_kdf_memory_mib * 1024**2 if explicit else kdf.default_kdf_memory_limit()
+    reason = kdf.expensive_kdf_reason(header.kdf_id, header.settings, limit)
+    if reason is None:
+        return
+    if explicit or not _interactive():
+        raise CLIError(f"{reason}, more than the {limit // 1024**2} MiB allowed; "
+                       f"if you trust this file, rerun with --max-kdf-memory MIB")
+    if not _confirm(f"filecrypt: {reason}. Files made with the defaults need 64 MiB. "
+                    f"Continue? [y/N] "):
+        raise CLIError("cancelled")
+
+
+def _unlock(header: container.Header, spec: str, max_kdf_memory_mib: Optional[int] = None) -> bytes:
+    _check_kdf_cost(header, max_kdf_memory_mib)
     secret = sources.resolve_secret(spec)
     kek = kdf.derive_kek(header.kdf_id, header.settings, header.salt, secret.value)
     return container.unwrap_file_key(header, kek)
@@ -192,7 +227,7 @@ def cmd_decrypt(args) -> None:
         header = container.read_header(src)
         dest = Path(args.output) if args.output else _default_plain_name(args.input)
         _check_output(args.input, dest, args.force)
-        file_key = _unlock(header, args.key)
+        file_key = _unlock(header, args.key, args.max_kdf_memory)
         with AtomicOutput(dest, args.force) as out:
             container.decrypt_body(header, file_key, src, out.file)
             src.close()
@@ -217,7 +252,7 @@ def cmd_rekey(args) -> None:
         both_prompt = sources.parse_key_spec(args.key)[0] == "prompt" == sources.parse_key_spec(args.new_key)[0]
         if both_prompt:
             _warn("current key:")
-        file_key = _unlock(header, args.key)
+        file_key = _unlock(header, args.key, args.max_kdf_memory)
         if both_prompt:
             _warn("new key:")
         secret = sources.resolve_secret(args.new_key, confirm=True)
@@ -260,6 +295,12 @@ def _add_kdf_options(p: argparse.ArgumentParser) -> None:
                    help="treat key material as a passphrase (allows keys under 32 bytes)")
 
 
+def _add_max_kdf_memory(p: argparse.ArgumentParser) -> None:
+    p.add_argument("--max-kdf-memory", type=_positive_int, metavar="MIB",
+                   help="allow key derivation up to this much memory without asking "
+                        "(default: ask above 1024 MiB or half your RAM)")
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="filecrypt", description="Encrypt files to .fcx.")
     parser.add_argument("--version", action="version", version=f"filecrypt {__version__}")
@@ -287,6 +328,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("-o", "--output", help="output path (default INPUT without .fcx)")
     p.add_argument("--key", default=sources.DEFAULT_SPEC, help=KEY_HELP)
     p.add_argument("--force", action="store_true", help="overwrite an existing output file")
+    _add_max_kdf_memory(p)
     p.set_defaults(func=cmd_decrypt)
 
     p = sub.add_parser("rekey", help="change the key of an .fcx file without re-encrypting it")
@@ -296,6 +338,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--new-key", default=sources.DEFAULT_SPEC, help="new key; same forms as --key")
     _add_kdf_options(p)
     p.add_argument("--force", action="store_true", help="overwrite an existing -o file")
+    _add_max_kdf_memory(p)
     p.set_defaults(func=cmd_rekey)
     return parser
 

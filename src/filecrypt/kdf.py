@@ -11,6 +11,7 @@ demanding unbounded memory or time.
 
 from __future__ import annotations
 
+import os
 import struct
 from dataclasses import dataclass
 from typing import Callable, Literal, Optional, Tuple
@@ -46,6 +47,13 @@ SCRYPT_MIN_R = 8
 SCRYPT_MAX_R = 32
 SCRYPT_MAX_P = 16
 SCRYPT_MAX_MEMORY = 4 * 1024**3
+
+# Total work cap: memory x passes (Argon2id iterations, scrypt p).
+MAX_TOTAL_WORK = 16 * 1024**3
+# Decrypt/rekey ask before running a KDF whose memory exceeds this (or half of
+# physical RAM, whichever is lower), or whose total work exceeds 8x it.
+DEFAULT_KDF_MEMORY_LIMIT = 1024**3
+EXPENSIVE_WORK_FACTOR = 8
 
 
 class KDFError(Exception):
@@ -107,6 +115,8 @@ class Argon2Params:
         # Argon2 itself requires memory >= 8 KiB per lane and at least one lane.
         if self.parallelism < 1 or self.iterations < 1 or self.memory_kib < 8 * self.parallelism:
             raise KDFError("invalid Argon2id settings")
+        if self.memory_kib * 1024 * self.iterations > MAX_TOTAL_WORK:
+            raise KDFError("Argon2id total work (memory x iterations) above the 16 GiB limit")
 
     def check_for_encrypt(self) -> None:
         if self.memory_kib < ARGON2_MIN_MEMORY_KIB:
@@ -150,6 +160,8 @@ class ScryptParams:
             raise KDFError("scrypt r or p out of range")
         if self.memory_bytes > SCRYPT_MAX_MEMORY:
             raise KDFError("scrypt memory above the 4 GiB limit")
+        if self.memory_bytes * self.p > MAX_TOTAL_WORK:
+            raise KDFError("scrypt total work (memory x p) above the 16 GiB limit")
 
     def check_for_encrypt(self) -> None:
         if self.r < SCRYPT_MIN_R or (1 << self.log2n) * self.p < SCRYPT_MIN_COST:
@@ -271,4 +283,57 @@ def passphrase_warning(secret: Secret) -> Optional[str]:
     if n < MIN_PASSPHRASE_CHARS:
         return (f"warning: passphrase is only {n} characters; "
                 f"{MIN_PASSPHRASE_CHARS} or more is recommended")
+    return None
+
+
+# --- resource policy for unauthenticated settings (decrypt, rekey) -----------
+
+def kdf_cost(kdf_id: int, settings: bytes) -> Tuple[int, int]:
+    """Return (memory in bytes, passes) that deriving with these settings needs."""
+    if kdf_id == ARGON2ID:
+        p = Argon2Params.decode(settings)
+        return p.memory_kib * 1024, p.iterations
+    if kdf_id == SCRYPT:
+        sp = ScryptParams.decode(settings)
+        return sp.memory_bytes, sp.p
+    return 0, 0
+
+
+def physical_memory() -> Optional[int]:
+    """Installed RAM in bytes, or None if it can't be determined."""
+    try:
+        if os.name == "nt":
+            import ctypes
+
+            class _MemStatus(ctypes.Structure):
+                _fields_ = [("dwLength", ctypes.c_ulong), ("dwMemoryLoad", ctypes.c_ulong),
+                            ("ullTotalPhys", ctypes.c_ulonglong), ("ullAvailPhys", ctypes.c_ulonglong),
+                            ("ullTotalPageFile", ctypes.c_ulonglong), ("ullAvailPageFile", ctypes.c_ulonglong),
+                            ("ullTotalVirtual", ctypes.c_ulonglong), ("ullAvailVirtual", ctypes.c_ulonglong),
+                            ("ullAvailExtendedVirtual", ctypes.c_ulonglong)]
+
+            st = _MemStatus()
+            st.dwLength = ctypes.sizeof(st)
+            if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(st)):
+                return int(st.ullTotalPhys)
+            return None
+        return os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES")
+    except (AttributeError, ValueError, OSError):
+        return None
+
+
+def default_kdf_memory_limit() -> int:
+    ram = physical_memory()
+    if ram:
+        return min(DEFAULT_KDF_MEMORY_LIMIT, ram // 2)
+    return DEFAULT_KDF_MEMORY_LIMIT
+
+
+def expensive_kdf_reason(kdf_id: int, settings: bytes, limit: int) -> Optional[str]:
+    """Describe why these settings exceed ``limit``, or None if they don't."""
+    memory, passes = kdf_cost(kdf_id, settings)
+    if memory > limit or memory * passes > EXPENSIVE_WORK_FACTOR * limit:
+        name = KDF_NAMES.get(kdf_id, str(kdf_id))
+        return (f"this file's key derivation ({name}) needs {memory // 1024**2} MiB of memory "
+                f"for {passes} pass{'es' if passes != 1 else ''}")
     return None

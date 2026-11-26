@@ -67,7 +67,9 @@ def test_argon2_cap_rejected_on_encrypt_and_decrypt(p):
 
 
 def test_argon2_caps_are_inclusive():
-    Argon2Params(4 * 1024 * 1024, 16, 16).check_for_encrypt()
+    # Each value may reach its cap, as long as total work stays within 16 GiB-passes.
+    Argon2Params(4 * 1024 * 1024, 4, 16).check_for_encrypt()
+    Argon2Params(1024 * 1024, 16, 16).check_for_encrypt()
     FAST_ARGON.check_for_encrypt()
 
 
@@ -226,3 +228,56 @@ def test_no_notice_when_scrypt_requested(monkeypatch):
     notes = []
     kdf.select_kdf(Secret(b"pw", "passphrase"), kdf="scrypt", notify=notes.append)
     assert notes == []
+
+
+# --- L2: total work cap and cost reporting --------------------------------------
+
+GIB = 1024**3
+
+
+def test_kdf_cost():
+    assert kdf.kdf_cost(ARGON2ID, Argon2Params(65536, 3, 4).encode()) == (64 * 1024**2, 3)
+    assert kdf.kdf_cost(SCRYPT, ScryptParams(17, 8, 2).encode()) == (128 * 1024**2, 2)
+    assert kdf.kdf_cost(HKDF, b"") == (0, 0)
+
+
+@pytest.mark.parametrize("p", [
+    Argon2Params(4 * 1024 * 1024, 5, 1),   # 4 GiB x 5 passes
+    Argon2Params(2 * 1024 * 1024, 16, 1),  # 2 GiB x 16 passes
+])
+def test_argon2_total_work_capped(p):
+    with pytest.raises(KDFError, match="total"):
+        p.check_for_encrypt()
+    with pytest.raises(KDFError, match="total"):
+        kdf.derive_kek(ARGON2ID, p.encode(), SALT, b"pw")
+
+
+def test_scrypt_total_work_capped():
+    ScryptParams(22, 8, 4).check_caps()                # 4 GiB x 4 = the cap
+    with pytest.raises(KDFError, match="total"):
+        kdf.derive_kek(SCRYPT, ScryptParams(22, 8, 5).encode(), SALT, b"pw")
+
+
+def test_default_memory_limit_uses_half_of_ram(monkeypatch):
+    monkeypatch.setattr(kdf, "physical_memory", lambda: 1 * GIB)
+    assert kdf.default_kdf_memory_limit() == GIB // 2
+    monkeypatch.setattr(kdf, "physical_memory", lambda: 64 * GIB)
+    assert kdf.default_kdf_memory_limit() == GIB
+    monkeypatch.setattr(kdf, "physical_memory", lambda: None)
+    assert kdf.default_kdf_memory_limit() == GIB
+
+
+def test_physical_memory_detected():
+    mem = kdf.physical_memory()
+    assert mem is None or mem > 256 * 1024**2
+
+
+@pytest.mark.parametrize("settings,limit,heavy", [
+    (Argon2Params.default().encode(), GIB, False),
+    (Argon2Params(2 * 1024 * 1024, 2, 1).encode(), GIB, True),     # 2 GiB > 1 GiB
+    (Argon2Params(512 * 1024, 16, 1).encode(), GIB, False),        # 8 GiB-passes = 8 x limit
+    (Argon2Params(768 * 1024, 16, 1).encode(), GIB, True),         # 12 GiB-passes > 8 x limit
+    (Argon2Params(2 * 1024 * 1024, 2, 1).encode(), 4 * GIB, False),
+])
+def test_is_expensive(settings, limit, heavy):
+    assert (kdf.expensive_kdf_reason(ARGON2ID, settings, limit) is not None) == heavy
