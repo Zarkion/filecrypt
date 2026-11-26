@@ -73,6 +73,15 @@ def test_file_source_raw_and_base64(tmp_path):
     assert resolve_secret(f"file:{tmp_path / 'b64'}") == Secret(k, "key")
 
 
+def test_file_source_size_cap(tmp_path, monkeypatch):
+    monkeypatch.setattr(sources, "MAX_KEYFILE_BYTES", 64)
+    (tmp_path / "ok").write_bytes(bytes(range(64)))
+    (tmp_path / "big").write_bytes(bytes(range(65)))
+    assert resolve_secret(f"file:{tmp_path / 'ok'}").value == bytes(range(64))
+    with pytest.raises(KeySourceError, match="larger than"):
+        resolve_secret(f"file:{tmp_path / 'big'}")
+
+
 def test_file_source_missing(tmp_path):
     with pytest.raises(KeySourceError, match="cannot read"):
         resolve_secret(f"file:{tmp_path / 'nope'}")

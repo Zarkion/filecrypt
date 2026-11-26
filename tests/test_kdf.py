@@ -1,3 +1,4 @@
+import os
 import struct
 
 import pytest
@@ -173,7 +174,30 @@ def test_select_falls_back_to_scrypt_without_argon2(monkeypatch):
 
 
 def test_select_key_uses_hkdf():
-    assert kdf.select_kdf(Secret(b"k" * 32, "key")) == (HKDF, b"")
+    assert kdf.select_kdf(Secret(bytes(range(32)), "key")) == (HKDF, b"")
+    for _ in range(200):
+        assert kdf.select_kdf(Secret(os.urandom(32), "key")) == (HKDF, b"")
+
+
+@pytest.mark.requires_argon2
+@pytest.mark.parametrize("value", [
+    b"correct horse battery staple, my keyfile\n",
+    "\ufeffpassphrase written in Notepad with ünïcode\r\n".encode("utf-8"),
+    b"k" * 64,
+    b"\x00" * 4096,
+    b"\x01\x02" * 32,
+], ids=["sentence", "bom-unicode", "repeated-letter", "zeros", "pattern"])
+def test_human_made_key_is_stretched(value):
+    notes = []
+    kdf_id, _ = kdf.select_kdf(Secret(value, "key"), notify=notes.append)
+    assert kdf_id == ARGON2ID
+    assert notes and "stretched like a passphrase" in notes[0]
+
+
+def test_key_looks_human_made():
+    assert kdf.key_looks_human_made(b"a sentence that someone typed into a text file")
+    assert not kdf.key_looks_human_made(bytes(range(256)))
+    assert not kdf.key_looks_human_made(bytes(range(32)))
 
 
 @pytest.mark.requires_argon2

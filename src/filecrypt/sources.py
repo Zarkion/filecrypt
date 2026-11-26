@@ -27,6 +27,10 @@ from .keygen import load_key_material, write_keyfile
 ENTRY_POINT_GROUP = "filecrypt.key_sources"
 DEFAULT_SPEC = "prompt"
 
+#: Keyfiles past this size are refused rather than read into memory whole.
+#: Generous, so files already encrypted with a large keyfile (a photo) still open.
+MAX_KEYFILE_BYTES = 64 << 20
+
 _SCHEME_RE = re.compile(r"^[a-z][a-z0-9_-]+$")
 
 
@@ -71,9 +75,12 @@ class FileSource(KeySource):
             raise KeySourceError("file key source needs a path, e.g. file:my.key")
         try:
             with open(location, "rb") as f:
-                data = f.read()
+                data = f.read(MAX_KEYFILE_BYTES + 1)
         except OSError as e:
             raise KeySourceError(f"cannot read keyfile {location}: {e.strerror or e}") from None
+        if len(data) > MAX_KEYFILE_BYTES:
+            raise KeySourceError(f"keyfile {location} is larger than "
+                                 f"{MAX_KEYFILE_BYTES // (1 << 20)} MiB; is it the right file?")
         if not data:
             raise KeySourceError(f"keyfile {location} is empty")
         return Secret(load_key_material(data), "key")
