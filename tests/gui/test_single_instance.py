@@ -172,8 +172,15 @@ CLIENT = ("import json, sys; from filecrypt.gui import single_instance as si; "
 
 
 @pytest.fixture
-def server(qtbot):
+def qt(request):
+    """pytest-qt's qtbot, or a skip when the GUI test extras aren't installed."""
     pytest.importorskip("PySide6.QtNetwork", reason="needs PySide6")
+    pytest.importorskip("pytestqt", reason="needs pytest-qt")
+    return request.getfixturevalue("qtbot")
+
+
+@pytest.fixture
+def server(qt):
     name = f"fct-{uuid.uuid4().hex[:12]}"
     srv = si.make_server(name)
     assert srv is not None, "listen failed"
@@ -188,27 +195,27 @@ def _client(mode, paths, name):
                             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
 
 
-def test_paths_reach_the_server(server, qtbot):
+def test_paths_reach_the_server(server, qt):
     srv, name, got = server
     paths = [p("a.txt"), p("b ✓.txt")]
     proc = _client("encrypt", paths, name)
-    qtbot.waitUntil(lambda: bool(got), timeout=30_000)
+    qt.waitUntil(lambda: bool(got), timeout=30_000)
     out, err = proc.communicate(timeout=30)
     assert got == [("encrypt", paths)]
     assert out.strip() == "True", err
 
 
-def test_several_clients_at_once(server, qtbot):
+def test_several_clients_at_once(server, qt):
     srv, name, got = server
     procs = [_client("decrypt", [p(f"f{i}.fcx")], name) for i in range(4)]
-    qtbot.waitUntil(lambda: len(got) == 4, timeout=60_000)
+    qt.waitUntil(lambda: len(got) == 4, timeout=60_000)
     for proc in procs:
         out, err = proc.communicate(timeout=30)
         assert out.strip() == "True", err
     assert sorted(paths[0] for _, paths in got) == sorted(p(f"f{i}.fcx") for i in range(4))
 
 
-def test_server_drops_garbage(server, qtbot):
+def test_server_drops_garbage(server, qt):
     from PySide6.QtNetwork import QLocalSocket
     srv, name, got = server
     code = ("import sys; from PySide6.QtCore import QCoreApplication; "
@@ -224,7 +231,6 @@ def test_server_drops_garbage(server, qtbot):
     assert QLocalSocket  # imported only to require QtNetwork
 
 
-def test_send_without_a_server_returns_false(qtbot):
-    pytest.importorskip("PySide6.QtNetwork", reason="needs PySide6")
+def test_send_without_a_server_returns_false(qt):
     assert si.send("encrypt", [p("a")], name=f"fct-none-{uuid.uuid4().hex[:8]}",
                    timeout_ms=300) is False
