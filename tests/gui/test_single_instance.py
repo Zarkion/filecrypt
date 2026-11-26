@@ -58,7 +58,9 @@ def _raw(obj):
     _raw({"v": 1, "mode": "encrypt", "paths": [p("x")], "password": "hunter2"}),
     _raw(["encrypt", p("x")]),
     b"\xff\xfe\n",
-    b"x" * (si.MAX_REQUEST + 1),
+    # A short id: pytest puts the test id in the PYTEST_CURRENT_TEST environment
+    # variable, and a 1 MiB id is far past Windows' 32767-character limit.
+    pytest.param(b"x" * (si.MAX_REQUEST + 1), id="oversized"),
 ])
 def test_decode_rejects_bad_requests(data):
     with pytest.raises(si.ProtocolError):

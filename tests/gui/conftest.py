@@ -31,6 +31,14 @@ def _stderr_fd(config):
         return 2
 
 
+@pytest.hookimpl(trylast=True)
+def pytest_configure(config):
+    # Covers collection, before any test fixture runs.
+    fd = _stderr_fd(config)
+    os.write(fd, b"[collecting]\n")
+    faulthandler.dump_traceback_later(2 * HANG_LIMIT_S, exit=True, file=fd)
+
+
 @pytest.fixture(autouse=True)
 def _fail_loudly_on_hang(request):
     fd = _stderr_fd(request.config)
