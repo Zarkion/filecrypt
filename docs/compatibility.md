@@ -24,6 +24,9 @@ supporting all of these:
 * any chunk size from 1 KiB to 16 MiB, not just the 64 KiB filecrypt writes;
 * keyfiles as raw bytes or as base64 (as written by
   `keygen --format base64`), and key-store entries tagged `fcxkey:v1:`.
+  Keyfiles over 64 MiB are refused by default so the wrong file isn't read
+  into memory; set `FILECRYPT_MAX_KEYFILE_MB` to a larger number of MiB to
+  open files made with a bigger keyfile.
 
 ## What this means for future changes
 
