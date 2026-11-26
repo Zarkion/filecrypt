@@ -1,0 +1,108 @@
+name: Release
+
+# Pushing a tag vX.Y.Z builds the sdist and wheel and checks them. Publishing
+# to PyPI (with GitHub artifact attestations) runs only when the repository
+# variable PYPI_PUBLISH is set to "true", which it is not by default. Until
+# then a tag only builds; nothing leaves GitHub except the run's artifacts.
+#
+# To enable publishing:
+#   1. On pypi.org, add a Trusted Publisher (a "pending publisher" before the
+#      first upload) for project "filecrypt": owner Zarkion, repository
+#      filecrypt, workflow release.yml, environment pypi.
+#   2. In this repository's Settings > Environments, create "pypi" (adding
+#      required reviewers and a v* tag rule is recommended).
+#   3. In Settings > Secrets and variables > Actions > Variables, add
+#      PYPI_PUBLISH = true.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:  # build-only dry run from any branch
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+
+jobs:
+  build:
+    name: Build sdist and wheel
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Install build tools
+        run: python -m pip install build twine
+
+      - name: Build
+        run: python -m build
+
+      - name: Check metadata
+        run: python -m twine check --strict dist/*
+
+      - name: Check the tag matches the package version
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          version="${TAG#v}"
+          if [ ! -f "dist/filecrypt-${version}.tar.gz" ]; then
+            echo "::error::Tag $TAG does not match the package version. Built:"
+            ls dist
+            exit 1
+          fi
+
+      - name: Smoke-test the wheel
+        run: |
+          python -m venv /tmp/smoke
+          /tmp/smoke/bin/pip install dist/*.whl
+          /tmp/smoke/bin/filecrypt --version
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+          if-no-files-found: error
+
+  publish:
+    name: Publish to PyPI
+    needs: build
+    # Off unless the repository variable PYPI_PUBLISH is "true", and only for tags.
+    if: >-
+      vars.PYPI_PUBLISH == 'true' &&
+      github.event_name == 'push' &&
+      startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment:
+      name: pypi
+      url: https://pypi.org/project/filecrypt/
+    permissions:
+      contents: read
+      id-token: write      # OIDC for Trusted Publishing and attestations
+      attestations: write  # GitHub artifact attestations
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v3
+        with:
+          subject-path: dist/*
+
+      - name: Publish
+        uses: pypa/gh-action-pypi-publish@release/v1
