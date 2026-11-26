@@ -15,10 +15,15 @@ pip install ".[argon2]"       # + argon2-cffi, only for cryptography < 44
 ```
 filecrypt encrypt report.pdf                     # asks for a passphrase twice -> report.pdf.fcx
 filecrypt decrypt report.pdf.fcx                 # -> report.pdf
-filecrypt keygen backup.key                      # 32 random bytes, created exclusively, mode 0600
+filecrypt keygen backup.key                      # 32 random bytes, created exclusively, owner-only
 filecrypt encrypt db.sqlite --key file:backup.key
 filecrypt rekey report.pdf.fcx --key prompt --new-key file:backup.key
 ```
+
+Keyfiles are readable only by you: mode 0600 on Linux and macOS, and on
+Windows a protected ACL granting only your account and SYSTEM (inherited
+folder permissions are removed). If Windows refuses the ACL change, keygen
+warns and the file keeps the folder's permissions.
 
 Nothing is overwritten without `--force`. Output is written to a temp file and
 renamed into place, and partial output is deleted on any failure. `rekey`

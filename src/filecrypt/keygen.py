@@ -6,6 +6,7 @@ import base64
 import binascii
 import os
 import secrets
+import sys
 from pathlib import Path
 from typing import Union
 
@@ -52,14 +53,21 @@ def write_keyfile(path: Union[str, Path], data: bytes, *, force: bool = False) -
 
     Without ``force`` the file is created exclusively and an existing file is
     never touched. With ``force`` a temp file is written and renamed over it.
-    On Windows the mode only controls the read-only flag; the file inherits
-    the folder's ACL (normally owner-only under your user profile).
+    On Windows, where mode bits don't apply, the new file gets a protected
+    DACL granting only the current user and SYSTEM, set before any key bytes
+    are written. If that fails a warning is printed and the file keeps the
+    folder's inherited ACL.
     """
     path = Path(path)
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0)
     target = path if not force else path.with_name(f".{path.name}.{secrets.token_hex(6)}.tmp")
     fd = os.open(target, flags, 0o600)
     try:
+        if os.name == "nt":
+            from . import _winacl
+            if not _winacl.restrict_to_owner(target):
+                print(f"filecrypt: warning: could not restrict {path} to your user account; "
+                      f"it has the folder's permissions", file=sys.stderr)
         with os.fdopen(fd, "wb") as f:
             f.write(data)
             f.flush()
