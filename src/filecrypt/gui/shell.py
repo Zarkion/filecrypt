@@ -170,28 +170,44 @@ def _get(reg: Any, subkey: str, name: Optional[str]) -> Optional[Any]:
         return None
 
 
-def register(program: Optional[Sequence[str]] = None, *, reg: Any = None) -> None:
-    """Add the right-click and double-click entries for the current user."""
+def register(program: Optional[Sequence[str]] = None, *, reg: Any = None) -> bool:
+    """Add the right-click and double-click entries for the current user.
+
+    Only values that are missing or different are written, and Explorer is
+    told about the change only if something was written, so running the
+    installer again (or upgrading in place) doesn't make every Explorer
+    window refresh. Returns whether anything changed.
+    """
     reg = _winreg(reg)
     program = list(program) if program is not None else launcher()
+    changed = False
     for subkey, name, data in entries(program):
+        if _get(reg, subkey, name) == data:
+            continue
         with reg.CreateKeyEx(reg.HKEY_CURRENT_USER, f"{CLASSES}\\{subkey}", 0,
                              reg.KEY_WRITE) as k:
             reg.SetValueEx(k, name or "", 0, reg.REG_SZ, data)
+        changed = True
     # Claim double-click for .fcx only if nothing else has.
     if not _get(reg, EXTENSION, None):
         with reg.CreateKeyEx(reg.HKEY_CURRENT_USER, f"{CLASSES}\\{EXTENSION}", 0,
                              reg.KEY_WRITE) as k:
             reg.SetValueEx(k, "", 0, reg.REG_SZ, PROGID)
-    notify_shell()
+        changed = True
+    if changed:
+        notify_shell()
+    return changed
 
 
-def _delete_tree(reg: Any, path: str) -> None:
-    """Delete ``HKCU\\path`` and everything below it; missing keys are fine."""
+def _delete_tree(reg: Any, path: str) -> bool:
+    """Delete ``HKCU\\path`` and everything below it; missing keys are fine.
+
+    Returns whether the key was there.
+    """
     try:
         k = reg.OpenKey(reg.HKEY_CURRENT_USER, path, 0, reg.KEY_READ)
     except OSError:
-        return
+        return False
     with k:
         children = []
         i = 0
@@ -207,6 +223,7 @@ def _delete_tree(reg: Any, path: str) -> None:
         reg.DeleteKey(reg.HKEY_CURRENT_USER, path)
     except OSError:
         pass
+    return True
 
 
 def _is_empty(reg: Any, path: str) -> bool:
@@ -218,21 +235,27 @@ def _is_empty(reg: Any, path: str) -> bool:
     return subkeys == 0 and values == 0
 
 
-def unregister(*, reg: Any = None) -> None:
-    """Remove what :func:`register` added, and nothing else."""
+def unregister(*, reg: Any = None) -> bool:
+    """Remove what :func:`register` added, and nothing else.
+
+    Explorer is told only if something was removed. Returns whether anything
+    changed.
+    """
     reg = _winreg(reg)
-    _delete_tree(reg, f"{CLASSES}\\{ENCRYPT_VERB}")
-    _delete_tree(reg, f"{CLASSES}\\{PROGID}")
+    changed = _delete_tree(reg, f"{CLASSES}\\{ENCRYPT_VERB}")
+    changed = _delete_tree(reg, f"{CLASSES}\\{PROGID}") or changed
     try:
         with reg.OpenKey(reg.HKEY_CURRENT_USER, f"{CLASSES}\\{OPEN_WITH}", 0,
                          reg.KEY_SET_VALUE) as k:
             reg.DeleteValue(k, PROGID)
+        changed = True
     except OSError:
         pass
     if _get(reg, EXTENSION, None) == PROGID:
         with reg.OpenKey(reg.HKEY_CURRENT_USER, f"{CLASSES}\\{EXTENSION}", 0,
                          reg.KEY_SET_VALUE) as k:
             reg.DeleteValue(k, "")
+        changed = True
     # Tidy up keys we may have created, but only if nothing else lives there.
     for path in (OPEN_WITH, EXTENSION, r"*\shell"):
         if _is_empty(reg, f"{CLASSES}\\{path}"):
@@ -240,7 +263,9 @@ def unregister(*, reg: Any = None) -> None:
                 reg.DeleteKey(reg.HKEY_CURRENT_USER, f"{CLASSES}\\{path}")
             except OSError:
                 pass
-    notify_shell()
+    if changed:
+        notify_shell()
+    return changed
 
 
 def registered_commands(*, reg: Any = None) -> Dict[str, Optional[str]]:
@@ -254,7 +279,15 @@ def registered_commands(*, reg: Any = None) -> Dict[str, Optional[str]]:
 
 
 def notify_shell() -> None:
-    """Tell Explorer that file associations changed, so menus refresh now."""
+    """Tell Explorer, once, that file associations changed, so menus and icons refresh.
+
+    ``SHCNE_ASSOCCHANGED`` makes Explorer drop its icon cache and repaint
+    every open folder window, which is noticeable on a busy desktop, so the
+    callers send it only when they really changed something, and send it
+    exactly once. No ``SHCNF_FLUSH`` flag: the event is queued and this call
+    returns without waiting for Explorer (or any other window) to process it.
+    Nothing here broadcasts ``WM_SETTINGCHANGE``.
+    """
     if sys.platform != "win32":
         return
     try:

@@ -197,6 +197,34 @@ def test_register_twice_is_harmless(reg):
     assert reg.keys == first
 
 
+def test_register_tells_explorer_once_and_only_when_something_changed(monkeypatch):
+    calls = []
+    monkeypatch.setattr(shell, "notify_shell", lambda: calls.append(1))
+    reg = FakeWinreg()
+    assert shell.register([EXE], reg=reg) is True
+    assert calls == [1]
+    # Reinstalling or upgrading in place: nothing to write, no shell-wide refresh.
+    assert shell.register([EXE], reg=reg) is False
+    assert calls == [1]
+    # Moved install: the commands change, so Explorer hears about it once more.
+    assert shell.register([r"D:\apps\filecrypt-gui.exe"], reg=reg) is True
+    assert calls == [1, 1]
+
+
+def test_unregister_tells_explorer_only_when_something_was_removed(monkeypatch):
+    calls = []
+    monkeypatch.setattr(shell, "notify_shell", lambda: calls.append(1))
+    reg = FakeWinreg()
+    assert shell.unregister(reg=reg) is False
+    assert calls == []
+    shell.register([EXE], reg=reg)
+    calls.clear()
+    assert shell.unregister(reg=reg) is True
+    assert calls == [1]
+    assert shell.unregister(reg=reg) is False
+    assert calls == [1]
+
+
 def test_unregister_removes_everything_we_added(reg):
     shell.register([EXE], reg=reg)
     shell.unregister(reg=reg)

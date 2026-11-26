@@ -45,6 +45,9 @@ Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
 CloseApplications=yes
+; ChangesAssociations stays off on purpose: filecrypt-gui --register sends the
+; one association-changed notice itself, and only when it changed something.
+; Turning it on here would make Explorer refresh a second time.
 
 [Files]
 Source: "dist\filecrypt\*"; DestDir: "{app}"; Excludes: "filecrypt-selftest.exe"; Flags: ignoreversion recursesubdirs createallsubdirs
