@@ -4,6 +4,7 @@ import json
 import os
 import subprocess
 import sys
+import threading
 import uuid
 
 import pytest
@@ -85,16 +86,35 @@ def _lock_name(tmp_path):
     return str(tmp_path / "test.lock")
 
 
-HOLD = ("import sys, time; from filecrypt.gui.single_instance import InstanceLock; "
+HOLD = ("import os, sys, threading; "
+        "threading.Timer(60, lambda: os._exit(2)).start(); "   # never outlive the test
+        "from filecrypt.gui.single_instance import InstanceLock; "
         "l = InstanceLock(sys.argv[1]); print(l.acquire(), flush=True); "
-        "sys.stdin.readline()")
+        "sys.stdin.readline(); os._exit(0)")
 
 
 def _holder(name):
+    """Start a process that takes the lock and holds it until told to stop."""
     proc = subprocess.Popen([sys.executable, "-c", HOLD, name], stdin=subprocess.PIPE,
-                            stdout=subprocess.PIPE, text=True)
-    assert proc.stdout.readline().strip() == "True"
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    line = []
+    reader = threading.Thread(target=lambda: line.append(proc.stdout.readline()), daemon=True)
+    reader.start()
+    reader.join(30)
+    if not line or line[0].strip() != "True":
+        proc.kill()
+        _, err = proc.communicate(timeout=30)
+        pytest.fail(f"lock holder didn't take the lock: {line!r} {err}")
     return proc
+
+
+def _stop(proc):
+    try:
+        proc.communicate("\n", timeout=30)
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait(timeout=30)
 
 
 def test_lock_is_exclusive_between_processes(tmp_path):
@@ -103,7 +123,7 @@ def test_lock_is_exclusive_between_processes(tmp_path):
     try:
         assert not si.InstanceLock(name).acquire()
     finally:
-        proc.communicate("\n", timeout=30)
+        _stop(proc)
     lock = si.InstanceLock(name)
     assert lock.acquire() and lock.held
     lock.release()
@@ -114,7 +134,7 @@ def test_lock_is_freed_when_the_holder_dies(tmp_path):
     name = _lock_name(tmp_path)
     proc = _holder(name)
     proc.kill()
-    proc.wait(timeout=30)
+    proc.communicate(timeout=30)
     lock = si.InstanceLock(name)
     assert lock.acquire()
     lock.release()
@@ -192,7 +212,8 @@ def server(qt):
 
 def _client(mode, paths, name):
     return subprocess.Popen([sys.executable, "-c", CLIENT, mode, json.dumps(paths), name],
-                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE, text=True)
 
 
 def test_paths_reach_the_server(server, qt):
@@ -225,7 +246,7 @@ def test_server_drops_garbage(server, qt):
             "s.waitForBytesWritten(10000); s.waitForReadyRead(3000); "
             "print(repr(bytes(s.readAll())))")
     out = subprocess.run([sys.executable, "-c", code, name], capture_output=True, text=True,
-                         timeout=60)
+                         stdin=subprocess.DEVNULL, timeout=60)
     assert "ok" not in out.stdout, out
     assert got == []
     assert QLocalSocket  # imported only to require QtNetwork

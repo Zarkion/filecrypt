@@ -330,6 +330,7 @@ def test_restricted_dll_search_still_starts_qt(tmp_path):
             "print('ok')")
     env = dict(os.environ, QT_QPA_PLATFORM="offscreen")
     out = subprocess.run([sys.executable, "-c", code], cwd=str(tmp_path), env=env,
-                         capture_output=True, text=True, timeout=120)
+                         capture_output=True, text=True, timeout=120,
+                         stdin=subprocess.DEVNULL)
     assert out.returncode == 0, out.stderr
     assert out.stdout.strip().endswith("ok")
