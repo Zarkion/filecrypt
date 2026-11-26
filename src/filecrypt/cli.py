@@ -1,201 +1,32 @@
-"""Command-line interface: keygen, encrypt, decrypt, rekey."""
+"""Command-line interface: keygen, encrypt, decrypt, rekey.
+
+A thin layer over :mod:`filecrypt.engine`: it parses arguments, reads keys
+from key sources and talks to the terminal. All file handling lives in the
+engine so other front-ends share it.
+"""
 
 from __future__ import annotations
 
 import argparse
-import glob
-import os
-import secrets
-import shutil
 import sys
-import tempfile
 from pathlib import Path
 from typing import List, Optional
 
-from . import __version__, container, kdf, keygen, sources
+from . import __version__, engine, keygen, sources
 from .container import AuthenticationError, FormatError
 from .kdf import Argon2Params, KDFError
 from .sources import KeySourceError
 
-FCX_SUFFIX = ".fcx"
 
 
 class CLIError(Exception):
     pass
 
 
-# --- atomic output -----------------------------------------------------------
-
-class AtomicOutput:
-    """Write to a temp file next to ``dest``; rename into place on commit.
-
-    If ``commit`` is never reached the temp file is deleted, so a failed or
-    interrupted run leaves no partial output. On Windows the temp file is
-    opened delete-on-close, so it disappears even if the process is killed;
-    a power cut can still leave one behind (see ``_handle_stale_parts``). Without ``force`` an existing
-    ``dest`` is never replaced, even if it appears while we are writing.
-    """
-
-    def __init__(self, dest: Path, force: bool):
-        self.dest = Path(dest)
-        self.force = force
-        self.file = None
-        self._tmp: Optional[str] = None
-        self._delete_on_close = False
-        self._committed = False
-
-    def __enter__(self) -> "AtomicOutput":
-        parent = self.dest.absolute().parent
-        fd = self._open_windows_temp(parent) if os.name == "nt" else None
-        if fd is None:
-            fd, self._tmp = tempfile.mkstemp(prefix=f".{self.dest.name}.", suffix=".part", dir=parent)
-            if os.name == "nt":
-                from . import _winacl
-                _winacl.restrict_to_owner(self._tmp)
-        self.file = os.fdopen(fd, "wb")
-        return self
-
-    def _open_windows_temp(self, parent: Path) -> Optional[int]:
-        """Open a delete-on-close temp file, so Windows removes it even if we are killed.
-
-        Returns None when delete-on-close can't be cleared on this Windows
-        version; the caller then uses an ordinary owner-only temp file.
-        """
-        from . import _windelete
-        flags = (os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_BINARY | os.O_NOINHERIT
-                 | os.O_TEMPORARY)
-        for _ in range(100):
-            path = str(parent / f".{self.dest.name}.{secrets.token_hex(4)}.part")
-            try:
-                fd = os.open(path, flags, 0o600)
-            except FileExistsError:
-                continue
-            # Probe once that the flag can be toggled, so commit can clear it.
-            if _windelete.set_delete_on_close(fd, True):
-                self._tmp, self._delete_on_close = path, True
-                return fd
-            os.close(fd)  # deleted by Windows on close
-            return None
-        raise FileExistsError(17, "could not create a temporary file", str(parent))
-
-    def commit(self) -> None:
-        self.file.flush()
-        os.fsync(self.file.fileno())
-        if self._delete_on_close:
-            from . import _windelete
-            if not _windelete.set_delete_on_close(self.file.fileno(), False):
-                raise OSError("could not keep the finished output file")
-        self.file.close()
-        if self.force:
-            os.replace(self._tmp, self.dest)
-        elif os.name == "nt":
-            os.rename(self._tmp, self.dest)  # fails if dest exists
-        else:
-            try:
-                os.link(self._tmp, self.dest)  # atomic, fails if dest exists
-                os.unlink(self._tmp)
-            except FileExistsError:
-                raise
-            except OSError:  # filesystem without hard links
-                if self.dest.exists():
-                    raise FileExistsError(17, "File exists", str(self.dest)) from None
-                os.rename(self._tmp, self.dest)
-        self._committed = True
-
-    def __exit__(self, *exc) -> None:
-        if not self._committed:
-            try:
-                self.file.close()
-            except Exception:
-                pass
-            try:
-                os.unlink(self._tmp)
-            except OSError:
-                pass
-
-
-# --- helpers -----------------------------------------------------------------
+# --- terminal helpers ----------------------------------------------------------
 
 def _warn(msg: str) -> None:
     print(f"filecrypt: {msg}", file=sys.stderr)
-
-
-def _stale_parts(dest: Path) -> List[Path]:
-    parent = dest.absolute().parent
-    pattern = f".{glob.escape(dest.name)}.*.part"
-    return sorted(Path(p) for p in glob.glob(str(parent / pattern)))
-
-
-def _handle_stale_parts(dest: Path) -> None:
-    """Offer to delete partial files left by an earlier interrupted run."""
-    stale = _stale_parts(dest)
-    if not stale:
-        return
-    names = ", ".join(p.name for p in stale)
-    _warn(f"found {len(stale)} partial file(s) left by an interrupted run: {names}. "
-          f"They may contain decrypted data.")
-    if _interactive() and _confirm("filecrypt: delete them? [y/N] "):
-        for p in stale:
-            try:
-                p.unlink()
-            except OSError as e:
-                _warn(f"could not delete {p.name}: {e.strerror or e}")
-    elif not _interactive():
-        _warn("delete them yourself if you don't need them")
-
-
-def _open_input(path: str):
-    try:
-        return open(path, "rb")
-    except OSError as e:
-        raise CLIError(f"cannot open {path}: {e.strerror or e}") from None
-
-
-def _check_output(src: str, dest: Path, force: bool) -> None:
-    if dest.exists():
-        try:
-            same = os.path.samefile(src, dest)
-        except OSError:
-            same = False
-        if same:
-            raise CLIError("output would overwrite the input file")
-        if not force:
-            raise CLIError(f"{dest} already exists (use --force to overwrite)")
-
-
-def _argon_flags_given(args) -> bool:
-    return any(v is not None for v in (args.argon_memory, args.argon_iterations, args.argon_parallelism))
-
-
-def _argon_params(args) -> Optional[Argon2Params]:
-    """Validate Argon2id flags up front, before anyone is asked for a passphrase."""
-    if not _argon_flags_given(args):
-        return None
-    if args.kdf == "scrypt":
-        raise CLIError("--argon-* options only apply with --kdf argon2id")
-    p = Argon2Params.from_cli(args.argon_memory, args.argon_iterations, args.argon_parallelism)
-    p.check_for_encrypt()
-    return p
-
-
-def _new_key_block(args, secret: kdf.Secret, argon: Optional[Argon2Params]):
-    """Pick the KDF for ``secret``. Returns (derive_kek, kdf_id, settings).
-
-    The container calls ``derive_kek`` with the fresh salt it generates.
-    """
-    warning = kdf.passphrase_warning(secret)
-    if warning:
-        _warn(warning)
-    kdf_id, settings = kdf.select_kdf(secret, kdf=args.kdf, argon=argon,
-                                      keyfile_is_passphrase=args.keyfile_is_passphrase,
-                                      notify=_warn)
-    if kdf_id == kdf.HKDF and (argon is not None or args.kdf):
-        _warn("warning: KDF options are ignored for keys (HKDF is used)")
-
-    def derive(salt: bytes) -> bytes:
-        return kdf.derive_kek(kdf_id, settings, salt, secret.value)
-
-    return derive, kdf_id, settings
 
 
 def _interactive() -> bool:
@@ -213,30 +44,47 @@ def _confirm(prompt: str) -> bool:
         return False
 
 
-def _check_kdf_cost(header: container.Header, max_kdf_memory_mib: Optional[int]) -> None:
-    """Refuse or confirm costly KDF settings before asking for the key.
-
-    The settings come from the unauthenticated header, so a crafted file could
-    otherwise make us burn gigabytes of memory and minutes of CPU.
-    """
-    explicit = max_kdf_memory_mib is not None
-    limit = max_kdf_memory_mib * 1024**2 if explicit else kdf.default_kdf_memory_limit()
-    reason = kdf.expensive_kdf_reason(header.kdf_id, header.settings, limit)
-    if reason is None:
-        return
-    if explicit or not _interactive():
-        raise CLIError(f"{reason}, more than the {limit // 1024**2} MiB allowed; "
-                       f"if you trust this file, rerun with --max-kdf-memory MIB")
-    if not _confirm(f"filecrypt: {reason}. Files made with the defaults need 64 MiB. "
-                    f"Continue? [y/N] "):
-        raise CLIError("cancelled")
+def _handle_stale_parts(stale: List[Path]) -> None:
+    """Offer to delete partial files left by an earlier interrupted run."""
+    names = ", ".join(p.name for p in stale)
+    _warn(f"found {len(stale)} partial file(s) left by an interrupted run: {names}. "
+          f"They may contain decrypted data.")
+    if _interactive():
+        if _confirm("filecrypt: delete them? [y/N] "):
+            for p in stale:
+                try:
+                    p.unlink()
+                except OSError as e:
+                    _warn(f"could not delete {p.name}: {e.strerror or e}")
+    else:
+        _warn("delete them yourself if you don't need them")
 
 
-def _unlock(header: container.Header, spec: str, max_kdf_memory_mib: Optional[int] = None) -> bytes:
-    _check_kdf_cost(header, max_kdf_memory_mib)
-    secret = sources.resolve_secret(spec)
-    kek = kdf.derive_kek(header.kdf_id, header.settings, header.salt, secret.value)
-    return container.unwrap_file_key(header, kek)
+def _argon_params(args) -> Optional[Argon2Params]:
+    """Validate Argon2id flags up front, before anyone is asked for a passphrase."""
+    given = (args.argon_memory, args.argon_iterations, args.argon_parallelism)
+    if all(v is None for v in given):
+        return None
+    if args.kdf == "scrypt":
+        raise CLIError("--argon-* options only apply with --kdf argon2id")
+    p = Argon2Params.from_cli(*given)
+    p.check_for_encrypt()
+    return p
+
+
+def _encrypt_options(args) -> engine.EncryptOptions:
+    return engine.EncryptOptions(kdf=args.kdf, argon=_argon_params(args),
+                                 keyfile_is_passphrase=args.keyfile_is_passphrase)
+
+
+def _kdf_policy(args) -> dict:
+    """Costly KDF settings: --max-kdf-memory decides for scripts, otherwise ask on a terminal."""
+    if args.max_kdf_memory is not None:
+        return {"kdf_memory_limit": args.max_kdf_memory * 1024**2, "confirm_expensive": None}
+    if not _interactive():
+        return {"kdf_memory_limit": None, "confirm_expensive": None}
+    return {"kdf_memory_limit": None, "confirm_expensive": lambda reason: _confirm(
+        f"filecrypt: {reason}. Files made with the defaults need 64 MiB. Continue? [y/N] ")}
 
 
 # --- commands ----------------------------------------------------------------
@@ -264,70 +112,41 @@ def cmd_keygen(args) -> None:
 
 
 def cmd_encrypt(args) -> None:
-    dest = Path(args.output) if args.output else Path(args.input + FCX_SUFFIX)
-    argon = _argon_params(args)
-    with _open_input(args.input) as src:
-        _check_output(args.input, dest, args.force)
-        _handle_stale_parts(dest)
-        secret = sources.resolve_secret(args.key, confirm=True)
-        derive, kdf_id, settings = _new_key_block(args, secret, argon)
-        with AtomicOutput(dest, args.force) as out:
-            container.encrypt_stream(src, out.file, derive_kek=derive, kdf_id=kdf_id,
-                                     settings=settings)
-            src.close()
-            out.commit()
-
-
-def _default_plain_name(path: str) -> Path:
-    if path.lower().endswith(FCX_SUFFIX) and len(path) > len(FCX_SUFFIX):
-        return Path(path[:-len(FCX_SUFFIX)])
-    raise CLIError(f"{path} does not end in {FCX_SUFFIX}; choose an output name with -o")
+    options = _encrypt_options(args)
+    dest = Path(args.output) if args.output else engine.default_encrypt_output(args.input)
+    engine.encrypt_file(args.input, dest, lambda: sources.resolve_secret(args.key, confirm=True),
+                        options=options, force=args.force, notify=_warn,
+                        on_stale_parts=_handle_stale_parts)
 
 
 def cmd_decrypt(args) -> None:
-    with _open_input(args.input) as src:
-        header = container.read_header(src)
-        dest = Path(args.output) if args.output else _default_plain_name(args.input)
-        _check_output(args.input, dest, args.force)
-        _handle_stale_parts(dest)
-        file_key = _unlock(header, args.key, args.max_kdf_memory)
-        with AtomicOutput(dest, args.force) as out:
-            container.decrypt_body(header, file_key, src, out.file)
-            src.close()
-            out.commit()
+    dest = Path(args.output) if args.output else engine.default_decrypt_output(args.input)
+    if dest is None:
+        engine.inspect_file(args.input)  # a non-.fcx input is the clearer error
+        raise CLIError(f"{args.input} does not end in {engine.FCX_SUFFIX}; "
+                       f"choose an output name with -o")
+    engine.decrypt_file(args.input, dest, lambda: sources.resolve_secret(args.key),
+                        force=args.force, on_stale_parts=_handle_stale_parts, **_kdf_policy(args))
 
 
 def cmd_rekey(args) -> None:
-    argon = _argon_params(args)
-    with _open_input(args.input) as src:
-        header = container.read_header(src)
-        in_place = not args.output
-        if args.output:
-            dest = Path(args.output)
-            try:
-                in_place = os.path.samefile(args.input, dest)
-            except OSError:
-                pass
-            if not in_place and dest.exists() and not args.force:
-                raise CLIError(f"{dest} already exists (use --force to overwrite)")
-        else:
-            dest = Path(args.input)
-        _handle_stale_parts(dest)
-        both_prompt = sources.parse_key_spec(args.key)[0] == "prompt" == sources.parse_key_spec(args.new_key)[0]
+    options = _encrypt_options(args)
+    both_prompt = (sources.parse_key_spec(args.key)[0] == "prompt"
+                   == sources.parse_key_spec(args.new_key)[0])
+
+    def old_secret():
         if both_prompt:
             _warn("current key:")
-        file_key = _unlock(header, args.key, args.max_kdf_memory)
+        return sources.resolve_secret(args.key)
+
+    def new_secret():
         if both_prompt:
             _warn("new key:")
-        secret = sources.resolve_secret(args.new_key, confirm=True)
-        derive, kdf_id, settings = _new_key_block(args, secret, argon)
-        new_header = container.rewrap_header(header, file_key, derive_kek=derive,
-                                             kdf_id=kdf_id, settings=settings)
-        with AtomicOutput(dest, force=in_place or args.force) as out:
-            out.file.write(new_header)
-            shutil.copyfileobj(src, out.file, 1024 * 1024)
-            src.close()  # Windows cannot replace a file that is still open
-            out.commit()
+        return sources.resolve_secret(args.new_key, confirm=True)
+
+    engine.rekey_file(args.input, old_secret, new_secret, dest=args.output, options=options,
+                      force=args.force, notify=_warn, on_stale_parts=_handle_stale_parts,
+                      **_kdf_policy(args))
 
 
 # --- argument parsing --------------------------------------------------------
@@ -416,7 +235,12 @@ def main(argv: Optional[List[str]] = None) -> int:
     try:
         args.func(args)
         return 0
-    except (CLIError, FormatError, AuthenticationError, KDFError, KeySourceError, ValueError) as e:
+    except engine.ExpensiveKDFError as e:
+        _warn(f"error: {e}; if you trust this file, rerun with --max-kdf-memory MIB")
+    except engine.OutputExistsError as e:
+        _warn(f"error: {e} (use --force to overwrite)")
+    except (CLIError, engine.EngineError, FormatError, AuthenticationError, KDFError,
+            KeySourceError, ValueError) as e:
         _warn(f"error: {e}")
     except FileExistsError as e:
         _warn(f"error: {e.filename} already exists (use --force to overwrite)")
