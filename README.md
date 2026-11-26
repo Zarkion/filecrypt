@@ -23,6 +23,22 @@ pip install --only-binary=cryptography .
 Both versions include the built-in Argon2id, so nothing else is needed. This
 is the same command CI uses on its 32-bit and ARM64 Windows runners.
 
+## Before you rely on this
+
+* **Check the encrypted file opens before you delete the original.** Run
+  `filecrypt verify report.pdf.fcx` (or use **Verify** in the window). It
+  checks the password and every byte without writing anything out.
+* **A lost password means a lost file.** There is no recovery. Keep the
+  password or keyfile in a password manager, and keep a backup of it.
+* **Names, sizes and dates stay visible.** filecrypt encrypts a file's
+  contents only. The file name, its exact size and its timestamps can still
+  be seen by anyone who has the `.fcx` file.
+* **Deleting the original is not secure erasure.** On SSDs, cloud-synced
+  folders and backups the old data can often still be recovered.
+* **No independent audit.** filecrypt was written largely with an AI coding
+  assistant, and the security reviews so far were done by that same AI. See
+  the [security policy](SECURITY.md) and [threat model](docs/threat-model.md).
+
 ## Usage
 
 ```

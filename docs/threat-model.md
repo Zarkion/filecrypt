@@ -37,7 +37,7 @@ The full layout is in the [format spec](FORMAT.md).
 | Attacker | Example | Protected? |
 | --- | --- | --- |
 | Someone who gets a copy of the `.fcx` file | stolen laptop or USB stick, leaked cloud backup, email interception | **Yes**, if the key or passphrase is strong |
-| Someone who can change the file in storage or in transit | tampering with a backup, a flaky disk | **Yes**, the change is detected and decryption fails |
+| Someone who can change the file in storage or in transit | tampering with a backup, a flaky disk | **Mostly**: a change to the file's bytes is detected and decryption fails, but replacing the whole file with an older or different valid `.fcx` made with the same secret is not (see [What filecrypt does not protect](#what-filecrypt-does-not-protect)) |
 | Someone who crafts a malicious `.fcx` file and sends it to you | trying to exhaust memory or CPU | **Partly**, see [KDF cost caps](#kdf-cost-caps) |
 | Other local users on a shared computer | another account on the same Windows PC | **Partly**, see [Local attackers](#local-attackers) |
 | Malware or an admin on the machine where you type the passphrase | keylogger, memory scraper, compromised OS | **No** |
@@ -72,6 +72,13 @@ The full layout is in the [format spec](FORMAT.md).
 * **Which kind of secret was used.** The unencrypted header names the KDF, so
   anyone can tell whether a file was encrypted with a passphrase (Argon2id or
   scrypt, plus its cost settings) or a key (HKDF).
+* **Swapping whole files.** Each file is checked on its own. Someone who can
+  write to your storage can replace a file with an older valid version of it,
+  or swap two of your files that use the same secret, and both will still
+  decrypt without an error. Check that you got the version you expected.
+* **Secure deletion of the original.** Deleting the plaintext after encrypting
+  is an ordinary delete. On SSDs, journaling file systems, cloud-synced
+  folders and backups, the old data can usually still be recovered.
 * **That a file is an `.fcx` file.** The header starts with the magic bytes
   `FCX1`. filecrypt is not a steganography or deniability tool.
 * **Weak passphrases.** Argon2id and scrypt make each guess slow, but an
@@ -205,9 +212,10 @@ or the console window is closed.
 
 ## Known limitations
 
-An internal security review of v1 found no critical or high-severity issues.
-The medium and most low findings (M1-M3, L1-L4) are fixed on `main`. These are
-still open:
+The security reviews of v1 so far were done by the same AI coding assistant
+that wrote the code, so they are not independent and their findings are not
+recorded in this repository. Treat them as a development aid, not as
+assurance. These limitations are known and still open:
 
 * **"Refuse to replace" in the OS keyring is check-then-set.** OS keyrings
   have no create-only write. `keygen --store keyring:...` reads the entry back
@@ -232,5 +240,5 @@ still open:
   passphrase was typed in decomposed form (as macOS can produce) only opens
   when it is typed that way again. Rekeying such a file once fixes this (see
   the [format spec](FORMAT.md#secrets-how-passphrases-and-keys-become-bytes)).
-* **No independent audit.** The review was done as part of development, not
-  by an outside party.
+* **No independent audit.** No outside party has reviewed the code or the
+  format. The reviews so far were done by the AI that wrote the code.
