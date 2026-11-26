@@ -49,8 +49,8 @@ jobs:
           - { os: macos-latest, arch: arm64, python: "3.14" }
           - { os: macos-15-intel, arch: x64, python: "3.14" }
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-python@v6
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09  # v5
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6
         with:
           python-version: ${{ matrix.python }}
           architecture: ${{ matrix.arch }}
@@ -81,18 +81,24 @@ jobs:
         include:
           # argon2-cffi next to the built-in Argon2id: cross-checks the two.
           - { os: ubuntu-latest, backend: native+cffi, packages: "argon2-cffi" }
-          # cryptography 41 has no built-in Argon2id.
-          - { backend: cffi, packages: "cryptography==41.0.7 argon2-cffi" }
-          - { backend: scrypt, packages: "cryptography==41.0.7" }
+          # cryptography 41 has no built-in Argon2id. It stands in for a
+          # supported cryptography built against an OpenSSL without Argon2
+          # (distro builds against OpenSSL 3.0/3.1), which takes the same path.
+          - { backend: cffi, packages: "argon2-cffi", old_crypto: "cryptography==41.0.7" }
+          - { backend: scrypt, old_crypto: "cryptography==41.0.7" }
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-python@v6
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09  # v5
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6
         with:
           python-version: "3.12"
           cache: pip
           cache-dependency-path: "**/pyproject.toml"
       - name: Install
         run: python -m pip install -e ".[test]" -e plugins/filecrypt-azkv ${{ matrix.packages }}
+      - name: Swap in a cryptography without Argon2id
+        if: matrix.old_crypto
+        # Below the pyproject floor on purpose, so --no-deps skips the check.
+        run: python -m pip install --no-deps --only-binary=cryptography "${{ matrix.old_crypto }}"
       - name: Check Argon2 backend
         run: python .github/scripts/check_ci_env.py backend ${{ matrix.backend }}
       - name: Test
@@ -122,8 +128,8 @@ jobs:
       QT_QPA_PLATFORM: offscreen
       FILECRYPT_REQUIRE_GUI_TESTS: "1"
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-python@v6
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09  # v5
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6
         with:
           python-version: ${{ matrix.python }}
           cache: pip

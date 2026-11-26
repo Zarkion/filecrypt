@@ -7,7 +7,7 @@ Python 3.9+ and cryptography wheels do (x86, ARM, Windows, macOS, Linux).
 ```
 pip install .                 # core
 pip install ".[keyring]"      # + OS keyring key source
-pip install ".[argon2]"       # + argon2-cffi, only for cryptography < 44
+pip install ".[argon2]"       # + argon2-cffi, only if cryptography lacks Argon2id
 ```
 
 **32-bit (x86) and ARM64 Windows:** the newest cryptography releases (49 and
@@ -277,19 +277,25 @@ GUI tests use pytest-qt and run offscreen:
 
 ### Windows: installer and Explorer integration
 
-The easiest way onto Windows is the setup program,
-`filecrypt-<version>-windows-x64-unsigned-<commit>-setup.exe`. It installs
+**There's no published download yet.** Pre-releases will appear on the
+[Releases page](https://github.com/Zarkion/filecrypt/releases); until the first
+one does, install with pip as above. Each pre-release has a setup program,
+`filecrypt-<version>-windows-x64-unsigned-<commit>-setup.exe`, a portable zip,
+and `SHA256SUMS.txt`. The setup program installs
 for your account only, so it needs no administrator rights: the app goes to
 `%LOCALAPPDATA%\Programs\filecrypt`, gets a Start menu entry, and is added to
 Explorer. It's uninstalled from Settings > Apps like anything else, which
 also takes it out of Explorer. It needs 64-bit Windows 10 or later.
 
-**The installer is not code-signed yet**, so Windows SmartScreen says it's from
-an unknown publisher; choose "More info", then "Run anyway". Before you do,
-check the download against the `.sha256` file next to it:
-`(Get-FileHash .\filecrypt-...-setup.exe).Hash` in PowerShell should match.
-For now the installer and the portable zip are built by CI on every change
-(the "Windows build" workflow's artifacts) and aren't published as releases.
+**The installer is not code-signed yet** (that needs a certificate), so
+Windows SmartScreen says it's from an unknown publisher; choose "More info",
+then "Run anyway". Before you do, check the download. In PowerShell,
+`(Get-FileHash .\filecrypt-...-setup.exe).Hash` should match its line in
+`SHA256SUMS.txt`. That list sits on the same page as the file, so for a check
+that doesn't trust the page, each file also has a build provenance attestation
+recording which workflow run built it:
+`gh attestation verify .\filecrypt-...-setup.exe --repo Zarkion/filecrypt`
+(needs the [GitHub CLI](https://cli.github.com)).
 
 Once installed (or with `filecrypt-gui --register` from a pip install or the
 portable zip), Explorer gets:

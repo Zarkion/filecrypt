@@ -55,8 +55,11 @@ supporting all of these:
 
 ## Dropping Python and library versions
 
-filecrypt needs Python 3.9 or later and `cryptography` 41 or later. Argon2id
-comes from `cryptography` 44+ or, on older versions, from `argon2-cffi`.
+filecrypt needs Python 3.9 or later and `cryptography` 48.0.1 or later
+(46.0.3 on Windows ARM64, the last release with a wheel there). Argon2id comes
+from `cryptography` itself, or from `argon2-cffi` when cryptography was built
+against an OpenSSL older than 3.2. Files written with any version stay
+readable; the floor only moved to keep known-vulnerable releases out.
 
 * Support for an old Python or `cryptography` version is only dropped in a
   new minor release (or major, after 1.0), never in a patch release, and it
