@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import struct
 from dataclasses import dataclass
-from typing import Literal, Optional, Tuple
+from typing import Callable, Literal, Optional, Tuple
 
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF as _HKDF
@@ -38,7 +38,9 @@ ARGON2_MAX_ITERATIONS = 16
 ARGON2_MIN_LANES = 1
 ARGON2_MAX_LANES = 16
 
-SCRYPT_MIN_LOG2N = 14
+# Encrypt floor: cost N*p of at least 2^16 with r >= 8 (default is OWASP's
+# N=2^17, r=8, p=1).
+SCRYPT_MIN_COST = 1 << 16
 SCRYPT_MAX_LOG2N = 22
 SCRYPT_MIN_R = 8
 SCRYPT_MAX_R = 32
@@ -126,7 +128,7 @@ class ScryptParams:
 
     @classmethod
     def default(cls) -> "ScryptParams":
-        return cls(16, 8, 1)  # 64 MiB, matching the Argon2id default
+        return cls(17, 8, 1)  # 128 MiB, OWASP's first recommended setting
 
     def encode(self) -> bytes:
         return struct.pack(self._FMT, self.log2n, self.r, self.p)
@@ -150,8 +152,8 @@ class ScryptParams:
             raise KDFError("scrypt memory above the 4 GiB limit")
 
     def check_for_encrypt(self) -> None:
-        if self.log2n < SCRYPT_MIN_LOG2N or self.r < SCRYPT_MIN_R:
-            raise KDFError("scrypt settings below the minimum (N=2^14, r=8)")
+        if self.r < SCRYPT_MIN_R or (1 << self.log2n) * self.p < SCRYPT_MIN_COST:
+            raise KDFError("scrypt settings below the minimum (N*p >= 2^16 with r >= 8)")
         self.check_caps()
 
 
@@ -225,8 +227,13 @@ def derive_kek(kdf_id: int, settings: bytes, salt: bytes, secret: bytes) -> byte
 def select_kdf(secret: Secret, *, kdf: Optional[str] = None,
                argon: Optional[Argon2Params] = None,
                scrypt: Optional[ScryptParams] = None,
-               keyfile_is_passphrase: bool = False) -> Tuple[int, bytes]:
-    """Choose the KDF and its settings for encrypting with ``secret``."""
+               keyfile_is_passphrase: bool = False,
+               notify: Optional[Callable[[str], None]] = None) -> Tuple[int, bytes]:
+    """Choose the KDF and its settings for encrypting with ``secret``.
+
+    ``notify`` receives a one-line notice when Argon2id is unavailable and
+    scrypt is used instead without being asked for.
+    """
     treat_as_key = secret.kind == "key" and not keyfile_is_passphrase
     if treat_as_key:
         if len(secret.value) < MIN_KEY_BYTES:
@@ -239,6 +246,9 @@ def select_kdf(secret: Secret, *, kdf: Optional[str] = None,
         raise KDFError(f"unknown KDF {kdf!r} (choose argon2id or scrypt)")
     if kdf is None:
         kdf = "argon2id" if argon2_available() else "scrypt"
+        if kdf == "scrypt" and notify is not None:
+            notify("notice: Argon2id is unavailable, so scrypt is used; for Argon2id install "
+                   "cryptography >= 44 or argon2-cffi (pip install filecrypt[argon2])")
     if kdf == "argon2id":
         if not argon2_available():
             raise KDFError("Argon2id is unavailable: upgrade cryptography (>= 44) "

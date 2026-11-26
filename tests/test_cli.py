@@ -274,3 +274,11 @@ def test_python_dash_m_version():
     out = subprocess.run([sys.executable, "-m", "filecrypt", "--version"],
                          capture_output=True, text=True, check=True)
     assert "filecrypt" in out.stdout
+
+
+def test_scrypt_fallback_notice_on_stderr(work, monkeypatch, capsys):
+    from filecrypt import kdf as kdf_mod
+    monkeypatch.setattr(kdf_mod, "argon2_available", lambda: False)
+    assert cli.main(["encrypt", "plain.txt", "--key", "env:FC_PASS"]) == 0
+    assert header_of(work / "plain.txt.fcx").kdf_id == SCRYPT
+    assert "argon2-cffi" in capsys.readouterr().err

@@ -47,8 +47,11 @@ passphrase instead. Passphrases under 12 characters get a warning.
 
 `--kdf argon2id|scrypt`, `--argon-memory MIB` (default 64, min 19, max 4096),
 `--argon-iterations N` (default 3, 2-16), `--argon-parallelism N` (default 4, 1-16).
-scrypt defaults to N=2^16, r=8, p=1. Decryption refuses files whose KDF
-settings exceed these caps, since they are read before anything is authenticated.
+scrypt defaults to N=2^17, r=8, p=1 (128 MiB) and encrypt requires N×p ≥ 2^16
+with r ≥ 8. If Argon2id is unavailable (cryptography older than 44 and no
+argon2-cffi), encrypt falls back to scrypt and prints a notice saying so.
+Decryption refuses files whose KDF settings exceed these caps, since they are
+read before anything is authenticated.
 
 ## Format
 

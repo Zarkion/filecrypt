@@ -126,7 +126,8 @@ def _new_key_block(args, secret: kdf.Secret, argon: Optional[Argon2Params]):
     if warning:
         _warn(warning)
     kdf_id, settings = kdf.select_kdf(secret, kdf=args.kdf, argon=argon,
-                                      keyfile_is_passphrase=args.keyfile_is_passphrase)
+                                      keyfile_is_passphrase=args.keyfile_is_passphrase,
+                                      notify=_warn)
     if kdf_id == kdf.HKDF and (argon is not None or args.kdf):
         _warn("warning: KDF options are ignored for keys (HKDF is used)")
 

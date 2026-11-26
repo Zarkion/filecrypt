@@ -188,3 +188,41 @@ def test_short_passphrase_warning():
     # counted in characters, not bytes
     assert kdf.passphrase_warning(Secret("ééééééééééé".encode(), "passphrase"))
     assert kdf.passphrase_warning(Secret(b"x" * 5, "key")) is None
+
+
+# --- M3: scrypt strength and fallback ------------------------------------------
+
+def test_scrypt_default_is_owasp_strength():
+    assert ScryptParams.default() == ScryptParams(17, 8, 1)
+
+
+@pytest.mark.parametrize("p,ok", [
+    (ScryptParams(17, 8, 1), True),
+    (ScryptParams(16, 8, 1), True),   # N*p = 2^16
+    (ScryptParams(15, 8, 2), True),
+    (ScryptParams(14, 8, 4), True),
+    (ScryptParams(15, 8, 1), False),  # N*p = 2^15
+    (ScryptParams(14, 8, 3), False),
+    (ScryptParams(17, 4, 1), False),  # r below 8
+])
+def test_scrypt_encrypt_floor_is_cost_based(p, ok):
+    if ok:
+        p.check_for_encrypt()
+    else:
+        with pytest.raises(KDFError):
+            p.check_for_encrypt()
+
+
+def test_select_reports_silent_fallback(monkeypatch):
+    monkeypatch.setattr(kdf, "argon2_available", lambda: False)
+    notes = []
+    kdf_id, _ = kdf.select_kdf(Secret(b"pw", "passphrase"), notify=notes.append)
+    assert kdf_id == SCRYPT
+    assert len(notes) == 1 and "argon2-cffi" in notes[0] and "44" in notes[0]
+
+
+def test_no_notice_when_scrypt_requested(monkeypatch):
+    monkeypatch.setattr(kdf, "argon2_available", lambda: False)
+    notes = []
+    kdf.select_kdf(Secret(b"pw", "passphrase"), kdf="scrypt", notify=notes.append)
+    assert notes == []
