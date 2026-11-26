@@ -329,12 +329,51 @@ def test_worker_reports_success(qtbot, doc, tmp_path):
     assert seen and seen[-1] == 1000 and seen == sorted(seen)
 
 
+RLO = "\u202e"
+
+
+def test_window_refuses_a_disguised_decrypt_name(win, qtbot, tmp_path):
+    # "invoice<RLO>fdp.exe" displays as "invoiceexe.pdf": the CLI refuses it, so must we.
+    fcx = encrypted(tmp_path, name=f"invoice{RLO}fdp.exe")
+    win.set_file(fcx)
+    win.dec_password.setText(PW)
+    run(qtbot, win)
+    kind, text = status(win)
+    assert kind == "error" and "unsafe name" in text and RLO not in text
+    assert sorted(p.name for p in tmp_path.iterdir()) == [fcx.name]
+
+
+def test_window_refuses_a_disguised_encrypt_name(win, qtbot, tmp_path):
+    src = tmp_path / f"photo{RLO}gpj.exe"
+    src.write_bytes(DATA)
+    win.set_file(src)
+    win.enc_password.setText(PW)
+    win.enc_confirm.setText(PW)
+    win.understand.setChecked(True)
+    run(qtbot, win)
+    assert status(win)[0] == "error" and "unsafe name" in win.status.text()
+    assert sorted(p.name for p in tmp_path.iterdir()) == [src.name]
+
+
+@pytest.mark.parametrize("name", ["CON", "nul.txt", "a:stream", "trailing."])
+def test_worker_refuses_windows_unsafe_names(qtbot, tmp_path, monkeypatch, name):
+    monkeypatch.setattr(engine, "_WINDOWS_NAMES", True)
+    fcx = encrypted(tmp_path)
+    job = Job(JobSpec(DECRYPT, fcx, tmp_path / name, password=PW))
+    with qtbot.waitSignal(job.failed, timeout=WAIT) as blocker:
+        job.start()
+    job.wait()
+    assert blocker.args[0].kind == "error" and "unsafe name" in blocker.args[0].message
+    assert sorted(p.name for p in tmp_path.iterdir()) == [fcx.name]
+
+
 @pytest.mark.parametrize("exc, kind", [
     (engine.Cancelled(), "cancelled"),
     (worker.WrongKeyError("x"), "wrong_key"),
     (worker.CorruptedFileError("x"), "corrupted"),
     (worker.FormatError("x"), "not_fcx"),
     (engine.OutputExistsError("a.txt"), "exists"),
+    (engine.UnsafeOutputNameError("CON", "CON is a reserved Windows device name"), "error"),
     (kdf.KDFError("key is 3 bytes"), "error"),
     (PermissionError(13, "Permission denied", "a.txt"), "error"),
 ])
