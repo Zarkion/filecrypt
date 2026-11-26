@@ -83,6 +83,10 @@ def classify(exc: BaseException, spec: JobSpec) -> Failure:
     if isinstance(exc, FormatError):
         return Failure("not_fcx", "This isn't a file filecrypt can decrypt, or its beginning "
                                   "is damaged.")
+    if isinstance(exc, engine.UnsafeOutputNameError):
+        # Don't echo the name: bidi controls would display it in disguise here too.
+        return Failure("error", f"The file this would create has an unsafe name: "
+                                f"{exc.reason}. No file was written.")
     if isinstance(exc, engine.OutputExistsError):
         return Failure("exists", f"{exc.path.name} already exists.")
     if isinstance(exc, engine.ExpensiveKDFError):
@@ -192,6 +196,9 @@ class Job(QThread):
                         pass
 
         try:
+            # Same output-name rule as the CLI, so a hostile name such as
+            # "invoice<RLO>fdp.exe.fcx" or "CON.fcx" can't be written from here either.
+            engine.check_output_name(spec.dest)
             if spec.mode == ENCRYPT:
                 options = EncryptOptions(argon=spec.argon,
                                          keyfile_is_passphrase=spec.keyfile_is_passphrase)
