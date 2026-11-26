@@ -36,6 +36,10 @@ key block, so the encrypted body stays byte-identical.
 | `keyring:SERVICE/NAME` | key or passphrase | needs the `keyring` extra |
 | `azkv:VAULT/SECRET` | key or passphrase | plugin: `plugins/filecrypt-azkv` |
 
+In key stores (keyring, plugins), only entries written by `keygen --store`,
+which are tagged `fcxkey:v1:<base64>`, count as keys. Anything else you put
+there yourself is treated as a passphrase and goes through Argon2id.
+
 Passphrases go through Argon2id (or scrypt). Keys must be at least 32 bytes and
 go through HKDF-SHA256; `--keyfile-is-passphrase` treats a keyfile as a
 passphrase instead. Passphrases under 12 characters get a warning.

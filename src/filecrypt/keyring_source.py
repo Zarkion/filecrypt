@@ -2,13 +2,13 @@
 
 Uses the ``keyring`` package (Windows Credential Manager, macOS Keychain,
 Secret Service on Linux). Install with ``pip install filecrypt[keyring]``.
-Keys are stored as base64 text. An entry that isn't a base64 key of at least
-32 bytes is treated as a passphrase, so a hand-entered password also works.
+Keys are stored as ``fcxkey:v1:<base64>``. Any entry without that tag is
+treated as a passphrase (and goes through Argon2id), so a hand-entered
+password works safely.
 """
 
 from __future__ import annotations
 
-import base64
 from typing import Tuple
 
 from .kdf import Secret
@@ -48,9 +48,9 @@ class KeyringSource:
         return secret_from_stored_text(value)
 
     def store(self, location: str, key: bytes) -> None:
-        from .sources import KeySourceError
+        from .sources import KeySourceError, encode_stored_key
         service, name = _split(location)
         kr = _keyring()
         if kr.get_password(service, name):
             raise KeySourceError(f"keyring entry {service}/{name} already exists")
-        kr.set_password(service, name, base64.b64encode(key).decode("ascii"))
+        kr.set_password(service, name, encode_stored_key(key))

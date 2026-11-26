@@ -13,13 +13,15 @@ factory returning one. Plugins cannot replace built-in schemes.
 
 from __future__ import annotations
 
+import base64
+import binascii
 import getpass
 import os
 import re
 import sys
 from typing import Dict, List, Tuple
 
-from .kdf import Secret
+from .kdf import MIN_KEY_BYTES, Secret
 from .keygen import load_key_material, write_keyfile
 
 ENTRY_POINT_GROUP = "filecrypt.key_sources"
@@ -114,17 +116,34 @@ _BUILTINS: Dict[str, type] = {
 }
 
 
+STORED_KEY_PREFIX = "fcxkey:v1:"
+
+
+def encode_stored_key(key: bytes) -> str:
+    """Text form of a key for key stores: ``fcxkey:v1:<base64>``."""
+    return STORED_KEY_PREFIX + base64.b64encode(key).decode("ascii")
+
+
 def secret_from_stored_text(text: str) -> Secret:
     """Interpret a secret stored as text in a key store.
 
-    Base64 that decodes to at least 32 bytes (what ``keygen --store`` writes)
-    is a key; anything else is a passphrase. Plugins can reuse this.
+    Only text tagged ``fcxkey:v1:`` (what ``keygen --store`` writes) is a key.
+    Anything else is a passphrase, even if it happens to look like base64, so
+    a hand-entered password always gets the memory-hard KDF. Plugins should
+    use this together with ``encode_stored_key``.
     """
-    raw = text.encode("utf-8")
-    decoded = load_key_material(raw)
-    if decoded != raw:
-        return Secret(decoded, "key")
-    return Secret(raw.strip(b"\r\n"), "passphrase")
+    stripped = text.strip()
+    if stripped.startswith(STORED_KEY_PREFIX):
+        body = stripped[len(STORED_KEY_PREFIX):]
+        try:
+            key = base64.b64decode(body, validate=True)
+        except (binascii.Error, ValueError):
+            key = b""
+        if len(key) < MIN_KEY_BYTES:
+            raise KeySourceError("malformed stored key (expected fcxkey:v1: followed by "
+                                 f"base64 of at least {MIN_KEY_BYTES} bytes)")
+        return Secret(key, "key")
+    return Secret(text.encode("utf-8").strip(b"\r\n"), "passphrase")
 
 
 def _register_optional_builtins() -> None:

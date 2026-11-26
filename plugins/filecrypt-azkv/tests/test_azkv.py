@@ -66,7 +66,8 @@ def test_store_and_get(vaults):
     src = AzureKeyVaultSource()
     src.store("myvault/filekey", k)
     stored = vaults["https://myvault.vault.azure.net"][("filekey", "latest")]
-    assert base64.b64decode(stored) == k
+    assert stored.startswith("fcxkey:v1:")
+    assert base64.b64decode(stored[len("fcxkey:v1:"):]) == k
     assert src.get("myvault/filekey") == Secret(k, "key")
 
 
@@ -80,6 +81,12 @@ def test_store_refuses_existing(vaults):
 def test_missing_secret(vaults):
     with pytest.raises(KeySourceError, match="not found"):
         AzureKeyVaultSource().get("myv/missing")
+
+
+def test_base64_looking_passphrase_stays_a_passphrase(vaults):
+    pw = "MyDogSpotLovesTheParkEverySundayMorning2024x"
+    vaults["https://myv.vault.azure.net"] = {("pw", "latest"): pw}
+    assert AzureKeyVaultSource().get("myv/pw") == Secret(pw.encode(), "passphrase")
 
 
 def test_passphrase_secret(vaults):

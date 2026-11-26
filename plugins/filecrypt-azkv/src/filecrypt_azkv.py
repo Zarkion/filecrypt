@@ -6,7 +6,8 @@
 Authentication uses azure-identity's DefaultAzureCredential, so ``az login``,
 environment variables, managed identity and the other standard methods work.
 ``filecrypt keygen --store azkv:VAULT/SECRET`` creates a new random key in the
-vault (it refuses to replace an existing secret). Keys are stored as base64.
+vault (it refuses to replace an existing secret). Keys are stored as
+``fcxkey:v1:<base64>``; a secret without that tag is used as a passphrase.
 
 The plugin is registered with one entry point in its pyproject.toml:
 
@@ -16,13 +17,13 @@ The plugin is registered with one entry point in its pyproject.toml:
 
 from __future__ import annotations
 
-import base64
 import re
 from typing import Optional, Tuple
 from urllib.parse import urlparse
 
 from filecrypt.kdf import Secret
-from filecrypt.sources import KeySource, KeySourceError, secret_from_stored_text
+from filecrypt.sources import (KeySource, KeySourceError, encode_stored_key,
+                               secret_from_stored_text)
 
 __version__ = "0.1.0"
 
@@ -108,6 +109,6 @@ class AzureKeyVaultSource(KeySource):
         else:
             raise KeySourceError(f"secret {name} already exists in {vault_url}")
         try:
-            client.set_secret(name, base64.b64encode(key).decode("ascii"))
+            client.set_secret(name, encode_stored_key(key))
         except Exception as e:
             raise KeySourceError(f"Azure Key Vault error: {e}") from None

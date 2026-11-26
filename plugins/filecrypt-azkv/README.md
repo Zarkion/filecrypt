@@ -12,4 +12,4 @@ filecrypt decrypt data.csv.fcx --key azkv:https://myvault.vault.azure.net/secret
 
 Authentication uses `DefaultAzureCredential`. You need the "Key Vault Secrets
 User" role to read and "Key Vault Secrets Officer" to store. Keys are stored
-as base64 secrets; a secret holding plain text is used as a passphrase.
+as `fcxkey:v1:<base64>` secrets; any other secret value is used as a passphrase.

@@ -36,7 +36,7 @@ def test_keyring_is_builtin():
 def test_store_then_get_round_trip(fake_keyring):
     k = os.urandom(32)
     sources.get_source("keyring").store("filecrypt/main", k)
-    assert fake_keyring.store[("filecrypt", "main")] == base64.b64encode(k).decode()
+    assert fake_keyring.store[("filecrypt", "main")] == "fcxkey:v1:" + base64.b64encode(k).decode()
     assert sources.resolve_secret("keyring:filecrypt/main") == Secret(k, "key")
 
 
@@ -84,11 +84,39 @@ def test_cli_keygen_store_and_encrypt(fake_keyring, tmp_path, monkeypatch):
     assert cli.main(["keygen", "--store", "keyring:filecrypt/test"]) == 1
 
 
+EXAMPLE = "MyDogSpotLovesTheParkEverySundayMorning2024x"  # 44 chars, valid base64
+
+
 @pytest.mark.parametrize("text,expected", [
-    (base64.b64encode(b"k" * 32).decode(), Secret(b"k" * 32, "key")),
-    ("  " + base64.b64encode(b"k" * 48).decode() + "\n", Secret(b"k" * 48, "key")),
+    ("fcxkey:v1:" + base64.b64encode(b"k" * 32).decode(), Secret(b"k" * 32, "key")),
+    ("  fcxkey:v1:" + base64.b64encode(b"k" * 48).decode() + "\n", Secret(b"k" * 48, "key")),
     ("not a key", Secret(b"not a key", "passphrase")),
-    (base64.b64encode(b"short").decode(), Secret(base64.b64encode(b"short"), "passphrase")),
+    # Untagged base64 is never guessed to be a key (review M1).
+    (EXAMPLE, Secret(EXAMPLE.encode(), "passphrase")),
+    (base64.b64encode(b"k" * 32).decode(), Secret(base64.b64encode(b"k" * 32), "passphrase")),
 ])
 def test_secret_from_stored_text(text, expected):
     assert sources.secret_from_stored_text(text) == expected
+
+
+@pytest.mark.parametrize("bad", ["fcxkey:v1:", "fcxkey:v1:!!!!", "fcxkey:v1:" + base64.b64encode(b"x" * 16).decode()])
+def test_malformed_tagged_key_rejected(bad):
+    with pytest.raises(KeySourceError, match="malformed"):
+        sources.secret_from_stored_text(bad)
+
+
+def test_example_passphrase_in_keyring_goes_through_argon2(fake_keyring, tmp_path, monkeypatch):
+    from filecrypt import container
+    from filecrypt.kdf import ARGON2ID
+    monkeypatch.chdir(tmp_path)
+    fake_keyring.set_password("svc", "pw", EXAMPLE)
+    (tmp_path / "f.txt").write_bytes(b"data")
+    assert cli.main(["encrypt", "f.txt", "--key", "keyring:svc/pw", "--argon-memory", "19",
+                     "--argon-iterations", "2", "--argon-parallelism", "1"]) == 0
+    with open(tmp_path / "f.txt.fcx", "rb") as f:
+        assert container.read_header(f).kdf_id == ARGON2ID
+
+
+def test_encode_stored_key_round_trip():
+    k = os.urandom(32)
+    assert sources.secret_from_stored_text(sources.encode_stored_key(k)) == Secret(k, "key")
