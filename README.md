@@ -170,6 +170,30 @@ tool with the `filecrypt` command. `python -m filecrypt` also works and drops
 the current folder from the import path first, so a folder of downloads can't
 shadow a dependency or register a plugin.
 
+## Desktop window
+
+`filecrypt-gui` is a small window for people who'd rather not use a terminal.
+It runs on Windows, macOS and Linux (64-bit; PySide6 has no 32-bit Windows
+build).
+
+```
+pip install ".[gui]"
+filecrypt-gui                 # or: filecrypt-gui report.pdf
+```
+
+Drop a file on the window or choose one. Files that are already `.fcx` are
+decrypted, anything else is encrypted next to the original (which is kept).
+Encrypting asks for the password twice, shows how strong it is, and asks you
+to confirm you understand that a lost password means a lost file. A wrong
+password is asked for again; a damaged file gets its own message, so nobody
+retypes a correct password at a broken file. Work runs in the background with
+a progress bar and a Cancel button, and cancelling leaves no partial file.
+Under **Advanced** you can use a keyfile instead of a password and change the
+Argon2id settings.
+
+GUI tests use pytest-qt and run offscreen:
+`pip install -e ".[test-gui]"` then `pytest tests/gui`.
+
 ## Development
 
 ```
