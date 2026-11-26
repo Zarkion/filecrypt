@@ -208,7 +208,6 @@ def cmd_keygen(args) -> dict:
 def cmd_encrypt(args) -> dict:
     options = _encrypt_options(args)
     dest = Path(args.output) if args.output else engine.default_encrypt_output(args.input)
-    engine.check_output_name(dest)
     engine.encrypt_file(args.input, dest, lambda: _secret(args.key, confirm=True),
                         options=options, force=args.force, notify=_notice,
                         on_stale_parts=_handle_stale_parts)
@@ -221,7 +220,6 @@ def cmd_decrypt(args) -> dict:
         engine.inspect_file(args.input)  # a non-.fcx input is the clearer error
         raise CLIError(f"{args.input} does not end in {engine.FCX_SUFFIX}; "
                        f"choose an output name with -o")
-    engine.check_output_name(dest)
     engine.decrypt_file(args.input, dest, lambda: _secret(args.key),
                         force=args.force, on_stale_parts=_handle_stale_parts,
                         **_kdf_policy(args), **_retry_policy(args.key))
@@ -248,8 +246,6 @@ def cmd_rekey(args) -> dict:
             _warn("new key:")
         return _secret(args.new_key, confirm=True)
 
-    if args.output:
-        engine.check_output_name(args.output)
     dest = engine.rekey_file(args.input, old_secret, new_secret, dest=args.output,
                              options=options, force=args.force, notify=_notice,
                              on_stale_parts=_handle_stale_parts,

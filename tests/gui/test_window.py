@@ -50,13 +50,15 @@ def doc(tmp_path):
 
 
 def encrypted(tmp_path, data=DATA, password=PW, name="secret.txt"):
-    src = tmp_path / name
+    src = tmp_path / "plain.tmp"
     src.write_bytes(data)
-    dest = engine.encrypt_file(src, tmp_path / (name + ".fcx"),
-                               Secret(password.encode(), "passphrase"),
-                               options=EncryptOptions(argon=FAST))
+    # Encrypt under a safe name, then rename: the engine itself refuses to
+    # write hostile names, but an attacker can still hand us one.
+    out = engine.encrypt_file(src, tmp_path / "enc.tmp.fcx",
+                              Secret(password.encode(), "passphrase"),
+                              options=EncryptOptions(argon=FAST))
     src.unlink()
-    return dest
+    return out.rename(tmp_path / (name + ".fcx"))
 
 
 def run(qtbot, w):

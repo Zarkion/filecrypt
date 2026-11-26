@@ -196,9 +196,6 @@ class Job(QThread):
                         pass
 
         try:
-            # Same output-name rule as the CLI, so a hostile name such as
-            # "invoice<RLO>fdp.exe.fcx" or "CON.fcx" can't be written from here either.
-            engine.check_output_name(spec.dest)
             if spec.mode == ENCRYPT:
                 options = EncryptOptions(argon=spec.argon,
                                          keyfile_is_passphrase=spec.keyfile_is_passphrase)

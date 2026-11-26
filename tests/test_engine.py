@@ -432,6 +432,41 @@ def test_check_output_name_default_platform(monkeypatch):
     engine.check_output_name("CON")
 
 
+def test_operations_refuse_unsafe_output_names(work):
+    """Every writing operation checks the name itself, so no front end can skip it."""
+    evil = "invoice\u202efdp.exe"
+    asked = []
+
+    def secret():
+        asked.append(1)
+        return KEY
+    engine.encrypt_file(work / "doc.bin", work / "ok.fcx", KEY)
+    before = names(work)
+    with pytest.raises(engine.UnsafeOutputNameError):
+        engine.encrypt_file(work / "doc.bin", work / (evil + ".fcx"), secret)
+    with pytest.raises(engine.UnsafeOutputNameError):
+        engine.decrypt_file(work / "ok.fcx", work / evil, secret)
+    with pytest.raises(engine.UnsafeOutputNameError):
+        engine.rekey_file(work / "ok.fcx", secret, secret, dest=work / (evil + ".fcx"))
+    # Refused before any secret is asked for or any file is touched.
+    assert asked == [] and names(work) == before
+
+
+def test_name_check_runs_before_the_input_is_opened(work):
+    with pytest.raises(engine.UnsafeOutputNameError):
+        engine.decrypt_file(work / "missing.fcx", work / "a\x1bb", KEY)
+
+
+def test_in_place_rekey_skips_the_name_check(work, monkeypatch):
+    engine.encrypt_file(work / "doc.bin", work / "k.fcx", KEY)
+    checked = []
+    monkeypatch.setattr(engine, "check_output_name", checked.append)
+    engine.rekey_file(work / "k.fcx", KEY, PW, options=FAST)
+    assert checked == []    # in place creates no new name
+    engine.rekey_file(work / "k.fcx", PW, KEY, dest=work / "k2.fcx")
+    assert checked == [work / "k2.fcx"]
+
+
 # --- stale partial files ----------------------------------------------------------
 
 def test_stale_parts(work):
