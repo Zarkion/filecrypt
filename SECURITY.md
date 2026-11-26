@@ -1,9 +1,12 @@
 # Security policy
 
-filecrypt is a small, single-maintainer project. It has had one internal
-security review (see [Known limitations](docs/threat-model.md#known-limitations)),
-but no independent audit. Read the [threat model](docs/threat-model.md) before
-you rely on it for anything important.
+filecrypt is a small, single-maintainer project, and most of its code was
+written with an AI coding assistant. It has had no independent security audit.
+The reviews it has had were done by the same AI that wrote the code, so they
+are not independent and should not be taken as assurance (see
+[Known limitations](docs/threat-model.md#known-limitations)). Read the
+[threat model](docs/threat-model.md) before you rely on it for anything
+important.
 
 ## Reporting a vulnerability
 
