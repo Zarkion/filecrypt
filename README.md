@@ -31,6 +31,8 @@ filecrypt decrypt report.pdf.fcx                 # -> report.pdf
 filecrypt keygen backup.key                      # 32 random bytes, created exclusively, owner-only
 filecrypt encrypt db.sqlite --key file:backup.key
 filecrypt rekey report.pdf.fcx --key prompt --new-key file:backup.key
+filecrypt verify report.pdf.fcx --key file:backup.key  # checks every chunk, writes nothing
+filecrypt info report.pdf.fcx                    # header details, no key needed
 ```
 
 Keyfiles are readable only by you: mode 0600 on Linux and macOS, and on
@@ -48,6 +50,41 @@ mode 0600, or an owner-only ACL on Windows). The next run that writes the same
 output lists any such leftovers and offers to delete them. `rekey`
 replaces the file in place (use `-o` to write a copy); it only rewrites the
 key block, so the encrypted body stays byte-identical.
+
+### Checking files and scripting
+
+`verify` unlocks a file exactly as `decrypt` would (same key sources, KDF
+cost check and retries), then authenticates every chunk and throws the
+plaintext away. No output or temporary file is created, so it is safe to run
+on backups. `info` needs no key: it shows what the header says (key or
+passphrase, key derivation settings, chunk size) and the plaintext size the
+file's length implies. None of that is authenticated, so a truncated or
+edited file can show wrong values; only `verify` or `decrypt` can tell.
+
+Every command takes `--quiet` (`-q`), which hides notices and success
+messages but never errors or prompts, and `--json`, which prints one JSON
+object on standard output when the command ends: `{"ok": true, "command":
+..., ...}` on success, or `{"ok": false, "exit_code": N, "error": {"kind":
+..., "message": ...}}` on failure. File names are JSON-escaped, so any name
+round-trips. Error messages still go to standard error.
+
+Exit codes:
+
+| Code | Meaning | `--json` kind |
+| --- | --- | --- |
+| 0 | success | |
+| 1 | other error, such as an existing output without `--force` | `error` |
+| 2 | usage error | `usage` |
+| 3 | not an .fcx file, or a malformed or unsupported header | `format` |
+| 4 | wrong key or passphrase, **or** a modified header | `wrong_key_or_modified_header` |
+| 5 | the key was right but the file is damaged, truncated or was tampered with | `corrupted` |
+| 6 | the file's key derivation costs more than allowed (see `--max-kdf-memory`) | `kdf_cost_refused` |
+| 7 | the key source failed (missing keyfile, unset variable, keyring error) | `key_source` |
+| 8 | a file couldn't be read or written | `io` |
+| 130 | interrupted (Ctrl+C) | `interrupted` |
+
+Code 4 can't say which of the two it was: a wrong key and a tampered header
+fail the same check, by design.
 
 ### Key sources (`--key scheme:location`)
 
@@ -156,6 +193,12 @@ For a background worker thread, pass `cancel=engine.CancelToken()` and call
 chunk, raises `engine.Cancelled` and leaves no partial output. Pass
 `max_attempts=3` (with a callable secret) to re-ask after a wrong password
 without reopening the file; `on_wrong_key(attempt)` fires before each retry.
+
+`engine.verify_file(path, secret, ...)` takes the same keyword arguments as
+`decrypt_file` (except the output ones), writes nothing, and returns the
+authenticated chunk count and plaintext size. `engine.inspect_file` also
+reports `chunk_count` and `plaintext_size`, read from the file's length and
+therefore unauthenticated (`None` when the length is impossible).
 
 A wrong password or key raises `container.WrongKeyError`. A file that unlocks
 but then fails authentication (damaged, truncated or tampered with) raises

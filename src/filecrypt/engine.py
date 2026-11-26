@@ -1,4 +1,4 @@
-"""The filecrypt engine: encrypt, decrypt, rekey and inspect .fcx files.
+"""The filecrypt engine: encrypt, decrypt, rekey, verify and inspect .fcx files.
 
 This is the layer every front-end shares (the CLI today, a GUI later). It
 never prints, prompts or reads the keyboard; everything a user might need
@@ -140,6 +140,13 @@ class EncryptOptions:
 
 @dataclass(frozen=True)
 class FileInfo:
+    """What an .fcx header says, read without a key.
+
+    Nothing here is authenticated. The header is only checked when the file
+    key is unwrapped, and the body only when it is decrypted or verified, so
+    ``chunk_count`` and ``plaintext_size`` are what the file's length implies
+    if nobody truncated or extended it. Use :func:`verify_file` to know.
+    """
     version: int
     kdf_id: int
     kdf_name: str
@@ -148,16 +155,51 @@ class FileInfo:
     kdf_passes: int
     chunk_size: int
     header_len: int
+    file_size: Optional[int] = None       # bytes on disk, header included
+    chunk_count: Optional[int] = None     # unauthenticated; None if the length can't be valid
+    plaintext_size: Optional[int] = None  # unauthenticated; None if the length can't be valid
+
+
+@dataclass(frozen=True)
+class VerifyResult:
+    """What :func:`verify_file` authenticated: every chunk, in order, up to the final one."""
+    chunk_count: int
+    plaintext_size: int
+
+
+def body_layout(body_len: int, chunk_size: int) -> Optional[Tuple[int, int]]:
+    """``(chunks, plaintext bytes)`` a body of ``body_len`` bytes holds, or None
+    if no valid file has that length (for example a cut-off tag)."""
+    full = chunk_size + container.TAG_LEN
+    whole, rest = divmod(body_len, full)
+    if rest == 0:
+        if whole == 0:
+            return None          # even an empty file has one 16-byte final chunk
+        chunks, size = whole, whole * chunk_size
+    elif rest >= container.TAG_LEN:
+        chunks, size = whole + 1, whole * chunk_size + rest - container.TAG_LEN
+    else:
+        return None
+    if chunks > container.MAX_CHUNKS:
+        return None
+    return chunks, size
 
 
 def inspect_file(path: PathLike) -> FileInfo:
-    """Read an .fcx header without needing a key. Raises FormatError for other files."""
+    """Read an .fcx header without needing a key. Raises FormatError for other files.
+
+    The sizes it reports are unauthenticated (see :class:`FileInfo`).
+    """
     with _open_input(path) as f:
         h = container.read_header(f)
+        file_size = os.fstat(f.fileno()).st_size
     memory, passes = kdf.kdf_cost(h.kdf_id, h.settings)
+    layout = body_layout(file_size - h.header_len, h.chunk_size)
+    chunks, size = layout if layout is not None else (None, None)
     return FileInfo(h.version, h.kdf_id, kdf.KDF_NAMES.get(h.kdf_id, f"unknown ({h.kdf_id})"),
                     "key" if h.kdf_id == kdf.HKDF else "passphrase",
-                    memory, passes, h.chunk_size, h.header_len)
+                    memory, passes, h.chunk_size, h.header_len,
+                    file_size=file_size, chunk_count=chunks, plaintext_size=size)
 
 
 def default_encrypt_output(path: PathLike) -> Path:
@@ -289,6 +331,33 @@ def rekey_file(src: PathLike, old_secret: SecretArg, new_secret: SecretArg, *,
     return dest
 
 
+def verify_file(src: PathLike, secret: SecretArg, *, progress: Optional[Progress] = None,
+                kdf_memory_limit: Optional[int] = None,
+                confirm_expensive: Optional[ConfirmExpensive] = None,
+                cancel: Optional[CancelToken] = None, max_attempts: int = 1,
+                on_wrong_key: Optional[WrongKeyHandler] = None) -> VerifyResult:
+    """Check that ``src`` decrypts and is intact, without writing anything.
+
+    Unlocks the file exactly as :func:`decrypt_file` does (KDF cost check,
+    passphrase forms, retries), then authenticates every chunk and discards
+    the plaintext. No output or temporary file is created. Raises the same
+    errors as decrypt: :class:`~filecrypt.container.WrongKeyError` for a wrong
+    key or a modified header, :class:`~filecrypt.container.CorruptedFileError`
+    for a damaged, truncated or extended body.
+    """
+    _check_cancel(cancel)
+    with _open_input(src) as f:
+        header = container.read_header(f)
+        file_key = _unlock(header, secret, kdf_memory_limit, confirm_expensive,
+                           cancel, max_attempts, on_wrong_key)
+        total = os.fstat(f.fileno()).st_size - header.header_len
+        reader = _ProgressReader(f, total, progress, cancel)
+        sink = _NullSink()
+        container.decrypt_body(header, file_key, reader, sink)
+        reader.finish()
+    return VerifyResult(sink.writes, sink.size)
+
+
 # --- internals ---------------------------------------------------------------
 
 def _resolve(secret: SecretArg) -> Secret:
@@ -386,7 +455,25 @@ def _unwrap(header: container.Header, secret: Secret) -> bytes:
 
 
 def _kek(header: container.Header, secret: bytes) -> bytes:
+    if header.kdf_id == kdf.HKDF and len(secret) < kdf.MIN_KEY_BYTES:
+        # Too short to be the key, so it's a wrong key: the caller may ask again.
+        raise container.WrongKeyError(
+            f"wrong key: this file was encrypted with a key of at least {kdf.MIN_KEY_BYTES} "
+            f"bytes (such as a keyfile), not a passphrase")
     return kdf.derive_kek(header.kdf_id, header.settings, header.salt, secret)
+
+
+class _NullSink:
+    """Counts what decrypt_body would have written (one write per chunk)."""
+
+    def __init__(self) -> None:
+        self.writes = 0
+        self.size = 0
+
+    def write(self, data: bytes) -> int:
+        self.writes += 1
+        self.size += len(data)
+        return len(data)
 
 
 class _ProgressReader:

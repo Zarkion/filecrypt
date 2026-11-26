@@ -81,7 +81,7 @@ def test_cli_keygen_store_and_encrypt(fake_keyring, tmp_path, monkeypatch):
     assert cli.main(["encrypt", "f.txt", "--key", "keyring:filecrypt/test"]) == 0
     assert cli.main(["decrypt", "f.txt.fcx", "-o", "g.txt", "--key", "keyring:filecrypt/test"]) == 0
     assert (tmp_path / "g.txt").read_bytes() == b"data"
-    assert cli.main(["keygen", "--store", "keyring:filecrypt/test"]) == 1
+    assert cli.main(["keygen", "--store", "keyring:filecrypt/test"]) == 7
 
 
 EXAMPLE = "MyDogSpotLovesTheParkEverySundayMorning2024x"  # 44 chars, valid base64
