@@ -449,3 +449,70 @@ def test_verify_wrong_password(win, qtbot, tmp_path):
     verify(qtbot, win)
     assert asked and "Cancelled" in status(win)[1]
     assert win.mode == DECRYPT and not (tmp_path / "secret.txt").exists()
+
+
+# --- "Check it opens" after encrypting ----------------------------------------------
+
+def _encrypt_in_window(win, qtbot, doc):
+    win.show()
+    win.set_file(doc)
+    win.enc_password.setText(PW)
+    win.enc_confirm.setText(PW)
+    win.understand.setChecked(True)
+    run(qtbot, win)
+
+
+def test_check_it_opens_after_encrypting(win, qtbot, doc, tmp_path):
+    _encrypt_in_window(win, qtbot, doc)
+    kind, text = status(win)
+    assert kind == "ok" and "Check it opens" in text, text
+    assert win.check_button.isVisible()
+    before = sorted(p.name for p in tmp_path.iterdir())
+    win.check_button.click()
+    qtbot.waitUntil(lambda: win.job is None, timeout=WAIT)
+    kind, text = status(win)
+    assert kind == "ok" and "safe to delete the original" in text, text
+    assert sorted(p.name for p in tmp_path.iterdir()) == before   # nothing written
+    assert win.mode == ENCRYPT and not win.check_button.isVisible()
+
+
+def test_check_it_opens_warns_when_damaged(win, qtbot, doc, tmp_path):
+    _encrypt_in_window(win, qtbot, doc)
+    out = tmp_path / "report.pdf.fcx"
+    b = bytearray(out.read_bytes())
+    b[-100] ^= 1
+    out.write_bytes(bytes(b))
+    win.check_button.click()
+    qtbot.waitUntil(lambda: win.job is None, timeout=WAIT)
+    kind, text = status(win)
+    assert kind == "error" and text.startswith("Don't delete the original"), text
+
+
+def test_check_it_opens_goes_away_with_a_new_file(win, qtbot, doc, tmp_path):
+    _encrypt_in_window(win, qtbot, doc)
+    assert win.check_button.isVisible()
+    win.set_file(encrypted(tmp_path))
+    assert not win.check_button.isVisible() and win._check_specs == []
+
+
+def test_check_it_opens_with_a_keyfile_as_password(win, qtbot, doc, tmp_path):
+    key = tmp_path / "words.txt"
+    key.write_bytes("café short".encode())   # text, not NFC
+    win.show()
+    win.set_file(doc)
+    win.use_keyfile.setChecked(True)
+    win.keyfile_path.setText(str(key))
+    win.keyfile_is_passphrase.setChecked(True)
+    win.understand.setChecked(True)
+    run(qtbot, win)
+    assert status(win)[0] == "ok", status(win)
+    win.check_button.click()
+    qtbot.waitUntil(lambda: win.job is None, timeout=WAIT)
+    kind, text = status(win)
+    assert kind == "ok" and "keep the keyfile" in text, text
+    # The window now builds the same secret as the CLI's --keyfile-is-passphrase:
+    # the keyfile's exact bytes, so the CLI's way of reading the keyfile opens it.
+    from filecrypt import sources
+    raw = sources.FileSource().get(str(key))
+    assert raw.kind == "key" and raw.value == key.read_bytes()
+    engine.verify_file(tmp_path / "report.pdf.fcx", raw)

@@ -160,11 +160,11 @@ class Job(QThread):
     def _secret_source(self) -> Callable[[], Secret]:
         spec = self.spec
         if spec.keyfile is not None:
+            # The keyfile's bytes exactly as the CLI reads them. "Treat as a password"
+            # goes through EncryptOptions.keyfile_is_passphrase, the same switch as the
+            # CLI's --keyfile-is-passphrase, so both make identical files.
             def from_keyfile() -> Secret:
-                s = FileSource().get(os.fspath(spec.keyfile))
-                if spec.keyfile_is_passphrase:
-                    s = Secret(s.value, "passphrase")
-                return s
+                return FileSource().get(os.fspath(spec.keyfile))
             return from_keyfile
 
         first = [True]

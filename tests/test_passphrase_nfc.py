@@ -160,3 +160,28 @@ def test_keyfile_as_passphrase_is_not_normalized(plain, tmp_path):
         header = container.read_header(f)
     kek = kdf.derive_kek(header.kdf_id, header.settings, header.salt, raw)
     container.unwrap_file_key(header, kek)     # keyed with the exact bytes
+
+
+def test_keyfile_as_passphrase_old_gui_and_cli_encodings_both_open(tmp_path):
+    """Older desktop windows NFC-normalized a keyfile used as a password; the CLI
+    always used its exact bytes. Both kinds of file open with the keyfile today."""
+    keyfile = tmp_path / "words.txt"
+    keyfile.write_bytes(DECOMPOSED.encode("utf-8"))      # text that NFC changes
+    raw = keyfile.read_bytes()
+    nfc = COMPOSED.encode("utf-8")
+    src = tmp_path / "plain"
+    src.write_bytes(DATA)
+    opts = EncryptOptions(kdf=OPTIONS.kdf, argon=OPTIONS.argon, keyfile_is_passphrase=True)
+    # Old window: Secret(kind="passphrase") over the keyfile, so its NFC form.
+    old_gui = engine.encrypt_file(src, tmp_path / "gui.fcx", pw(DECOMPOSED), options=opts)
+    # CLI (and the window now): the keyfile's exact bytes, stretched like a passphrase.
+    cli = engine.encrypt_file(src, tmp_path / "cli.fcx", Secret(raw, "key"), options=opts)
+    secret = sources.FileSource().get(str(keyfile))
+    assert secret.kind == "key" and secret.unlock_candidates() == [raw, nfc]
+    for f in (old_gui, cli):
+        engine.verify_file(f, secret)
+
+
+def test_random_key_has_one_candidate():
+    k = bytes(range(32))
+    assert Secret(k, "key").unlock_candidates() == [k]

@@ -119,6 +119,9 @@ class MainWindow(QMainWindow):
         self._total = 0                    # files in the running batch
         self._not_run: List[str] = []
         self._verify_from: Optional[str] = None  # mode to go back to after "Verify"
+        # What just got encrypted, ready for "Check it opens" with the same secret.
+        # Dropped once the check runs or another file is picked.
+        self._check_specs: List[JobSpec] = []
         self._build()
         self._refresh()
 
@@ -193,6 +196,13 @@ class MainWindow(QMainWindow):
 
         brow = QHBoxLayout()
         brow.addWidget(self.open_folder)
+        self.check_button = QPushButton("Check it opens")
+        self.check_button.setToolTip("Unlock the new encrypted file with the same password "
+                                     "and check every part of it, so you know it's safe to "
+                                     "delete the original. Nothing is written.")
+        self.check_button.setVisible(False)
+        self.check_button.clicked.connect(self.check_opens)
+        brow.addWidget(self.check_button)
         brow.addStretch(1)
         self.reason_label = QLabel()
         self.reason_label.setEnabled(False)  # greyed-out hint next to the button
@@ -405,6 +415,7 @@ class MainWindow(QMainWindow):
     def _load(self, action: str, files: List[Path]) -> None:
         """Check every file for ``action`` and list the ones that can be done."""
         self._clear_status()
+        self._check_specs = []
         self.src, self.batch, self.mode, self.needs_keyfile = None, [], None, False
         ok: List[Path] = []
         modes, needs, problems = set(), set(), []
@@ -497,6 +508,7 @@ class MainWindow(QMainWindow):
         """Pick ``path`` and decide whether it is to be encrypted or decrypted."""
         path = Path(path)
         self._clear_status()
+        self._check_specs = []
         self.src, self.mode, self.needs_keyfile = None, None, False
         self.batch = []
         self._listed_action = None
@@ -625,6 +637,8 @@ class MainWindow(QMainWindow):
         self.action.setToolTip(reason or "")
         self.verify_button.setVisible(self.mode == DECRYPT and self.src is not None)
         self.verify_button.setEnabled(not busy and reason is None)
+        self.check_button.setVisible(bool(self._check_specs) and not busy
+                                     and self.mode == ENCRYPT)
         for w in (self.drop, self.pages, self.show_password, self.advanced):
             w.setEnabled(not busy)
         self.pages.setVisible(self.src is not None)
@@ -735,12 +749,22 @@ class MainWindow(QMainWindow):
         if self.job is None:           # nothing started; go back to decrypting
             self._end_verify()
 
+    def check_opens(self) -> None:
+        """Verify what was just encrypted, with the secret it was encrypted with."""
+        if self.mode != ENCRYPT or self._busy() or not self._check_specs:
+            return
+        specs, self._check_specs = self._check_specs, []
+        self._clear_status()
+        self._verify_from, self.mode = self.mode, TEST
+        self.run_batch(specs)
+
     def _end_verify(self) -> None:
         if self._verify_from is not None:
             self.mode, self._verify_from = self._verify_from, None
             self._refresh()
 
     def run_batch(self, specs: List[JobSpec]) -> None:
+        self._check_specs = []
         self._total, self._done, self._problems = len(specs), [], []
         self._not_run, self._motw_failed = [], []
         self._queue = list(specs[1:])
@@ -820,6 +844,10 @@ class MainWindow(QMainWindow):
         self._done.append(dest)
         if self.mode != TEST:
             self.last_output = dest
+        if self.mode == ENCRYPT and job is not None:
+            password = job.password if isinstance(job, BatchJob) else job.spec.password
+            self._check_specs.append(replace(job.spec, mode=TEST, src=dest, dest=dest,
+                                             password=password, argon=None, force=False))
         if self._queue:
             if job is not None and job.spec.keyfile is None and isinstance(job, BatchJob):
                 # If the person had to retype the password, use the one that worked.
@@ -830,9 +858,13 @@ class MainWindow(QMainWindow):
             return
         name = html.escape(dest.name)
         if self.mode == ENCRYPT:
-            text = (f"Done. Encrypted to <b>{name}</b>. The original file "
-                    f"is unchanged. Before deleting it, open <b>{name}</b> here and choose Verify "
-                    f"to check it opens, and keep the password somewhere safe.")
+            text = (f"Done. Encrypted to <b>{name}</b>. The original file is unchanged. "
+                    f"Before deleting it, choose <b>Check it opens</b>, and keep the "
+                    f"{self._secret_word()} somewhere safe.")
+        elif self.mode == TEST and self._verify_from == ENCRYPT:
+            text = (f"<b>{name}</b> opens and is undamaged, so it's safe to delete the "
+                    f"original, as long as you keep the {self._secret_word()} somewhere "
+                    f"safe. Without it, nobody can get the file back.")
         elif self.mode == TEST:
             text = (f"<b>{name}</b> is intact: the password is right and the file hasn't "
                     f"been damaged or changed since it was encrypted.")
@@ -858,7 +890,14 @@ class MainWindow(QMainWindow):
         return (f"<br>Windows' \"downloaded from the internet\" mark couldn't be copied to "
                 f"{names} (the drive may not support it). Be careful opening it.")
 
+    def _secret_word(self) -> str:
+        job = self.job
+        keyfile = job.spec.keyfile if job is not None else self._keyfile()
+        return "keyfile" if keyfile is not None else "password"
+
     def _failure_text(self, failure: Failure) -> str:
+        if self._verify_from == ENCRYPT and failure.kind != "cancelled":
+            return "Don't delete the original. " + failure.message
         if self.mode == TEST and failure.kind == "corrupted":
             return ("This file is damaged or has been changed since it was encrypted. Your "
                     "password was right. If you have another copy of the encrypted file, "
@@ -887,13 +926,18 @@ class MainWindow(QMainWindow):
     def _show_summary(self) -> None:
         verb = _VERBS[self.mode][2]
         n, ok = self._total, len(self._done)
-        if self.mode == TEST and ok == n:
+        if self.mode == TEST and ok == n and self._verify_from == ENCRYPT:
+            text = (f"All {n} files open and are undamaged, so it's safe to delete the "
+                    f"originals, as long as you keep the {self._secret_word()} somewhere "
+                    f"safe. Without it, nobody can get the files back.")
+        elif self.mode == TEST and ok == n:
             text = (f"All {n} files are intact: the password is right and none of them was "
                     f"damaged or changed since it was encrypted.")
         elif ok == n:
             text = f"Done. All {n} files {verb}."
             if self.mode == ENCRYPT:
-                text += " The originals are unchanged."
+                text += (" The originals are unchanged. Before deleting them, choose "
+                         "<b>Check it opens</b>.")
         else:
             text = f"{ok} of {n} files {verb}."
         for line in self._problems:
