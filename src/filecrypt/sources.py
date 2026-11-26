@@ -177,22 +177,46 @@ def parse_key_spec(spec: str) -> Tuple[str, str]:
     return scheme, location
 
 
+def _dist_name(ep) -> str:
+    dist = getattr(ep, "dist", None)
+    name = getattr(dist, "name", None) if dist is not None else None
+    if not name and dist is not None:
+        try:
+            name = dist.metadata["Name"]
+        except Exception:
+            name = None
+    return name or f"unknown package ({ep.value})"
+
+
+def _clean(text: str, limit: int = 200) -> str:
+    """One printable line, so plugin errors can't spoof terminal output."""
+    text = re.sub(r"\x1b\[[0-9;?]*[ -/]*[@-~]", "", text)
+    text = "".join(ch if ch.isprintable() else " " for ch in text)
+    text = " ".join(text.split())
+    return text if len(text) <= limit else text[:limit] + "..."
+
+
 def get_source(scheme: str) -> KeySource:
     if scheme in _BUILTINS:
         return _BUILTINS[scheme]()
-    for ep in _entry_points():
-        if ep.name != scheme:
-            continue
-        try:
-            obj = ep.load()
-            src = obj() if callable(obj) and not isinstance(obj, KeySource) else obj
-        except Exception as e:
-            raise KeySourceError(f"key source plugin {scheme!r} failed to load: {e}") from None
-        if not callable(getattr(src, "get", None)):
-            raise KeySourceError(f"key source plugin {scheme!r} is not a key source")
-        return src
-    raise KeySourceError(f"unknown key source {scheme!r}; available: "
-                         f"{', '.join(available_sources())}")
+    matches = [ep for ep in _entry_points() if ep.name == scheme]
+    if not matches:
+        raise KeySourceError(f"unknown key source {scheme!r}; available: "
+                             f"{', '.join(available_sources())}")
+    dists = sorted({_dist_name(ep) for ep in matches})
+    if len(dists) > 1:
+        raise KeySourceError(f"key source {scheme!r} is registered by more than one package "
+                             f"({', '.join(dists)}); uninstall the one you don't trust")
+    ep = matches[0]
+    try:
+        obj = ep.load()
+        src = obj() if callable(obj) and not isinstance(obj, KeySource) else obj
+    except Exception as e:
+        raise KeySourceError(f"key source plugin {scheme!r} from {dists[0]} failed to load: "
+                             f"{type(e).__name__}: {_clean(str(e))}") from None
+    if not callable(getattr(src, "get", None)):
+        raise KeySourceError(f"key source plugin {scheme!r} from {dists[0]} is not a key source")
+    return src
 
 
 def available_sources() -> List[str]:

@@ -169,3 +169,47 @@ def test_plugin_must_be_key_source(monkeypatch):
     monkeypatch.setattr(sources, "_entry_points", _fake_eps(ep))
     with pytest.raises(KeySourceError, match="notsource"):
         sources.get_source("notsource")
+
+
+# --- L4: plugin loading hygiene ---------------------------------------------------
+
+class _FakeDist:
+    def __init__(self, name):
+        self.name = name
+        self.metadata = {"Name": name}
+
+
+class _FakeEP:
+    def __init__(self, name, dist, obj=FakeVault, exc=None):
+        self.name, self.dist, self.value = name, _FakeDist(dist), f"{dist}:Thing"
+        self._obj, self._exc = obj, exc
+
+    def load(self):
+        if self._exc:
+            raise self._exc
+        return self._obj
+
+
+def test_duplicate_scheme_names_both_distributions(monkeypatch):
+    monkeypatch.setattr(sources, "_entry_points",
+                        _fake_eps(_FakeEP("vault", "good-vault"), _FakeEP("vault", "sneaky-vault")))
+    with pytest.raises(KeySourceError) as e:
+        sources.get_source("vault")
+    assert "good-vault" in str(e.value) and "sneaky-vault" in str(e.value)
+
+
+def test_same_distribution_listed_twice_is_not_a_conflict(monkeypatch):
+    monkeypatch.setattr(sources, "_entry_points",
+                        _fake_eps(_FakeEP("vault", "good-vault"), _FakeEP("vault", "good-vault")))
+    assert isinstance(sources.get_source("vault"), FakeVault)
+
+
+def test_plugin_load_error_is_sanitized(monkeypatch):
+    nasty = RuntimeError("\x1b[2J\x1b[31mfake prompt\nPassphrase: " + "x" * 500)
+    monkeypatch.setattr(sources, "_entry_points", _fake_eps(_FakeEP("vault", "bad-vault", exc=nasty)))
+    with pytest.raises(KeySourceError) as e:
+        sources.get_source("vault")
+    msg = str(e.value)
+    assert "\x1b" not in msg and "\n" not in msg
+    assert "RuntimeError" in msg and "bad-vault" in msg
+    assert len(msg) < 400

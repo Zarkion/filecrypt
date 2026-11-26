@@ -110,8 +110,15 @@ then register it:
 myscheme = "my_package:MySource"
 ```
 
-Plugins cannot replace built-in schemes. See `plugins/filecrypt-azkv` for a
-complete example with tests.
+Plugins cannot replace built-in schemes, and if two installed packages
+register the same scheme, filecrypt refuses to use either and names both.
+Only the plugin matching the `--key` scheme is imported. See
+`plugins/filecrypt-azkv` for a complete example with tests.
+
+Plugins are ordinary installed code, so install only ones you trust. Run the
+tool with the `filecrypt` command. `python -m filecrypt` also works and drops
+the current folder from the import path first, so a folder of downloads can't
+shadow a dependency or register a plugin.
 
 ## Development
 

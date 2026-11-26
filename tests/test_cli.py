@@ -352,3 +352,17 @@ def test_normal_file_not_questioned(work, monkeypatch):
     monkeypatch.setattr(cli, "_interactive", lambda: True)
     assert cli.main(["encrypt", "plain.txt", "--key", "env:FC_PASS"]) == 0
     assert cli.main(["decrypt", "plain.txt.fcx", "-o", "b.txt", "--key", "env:FC_PASS"]) == 0
+
+
+# --- L4: python -m filecrypt ignores code planted in the current folder -----------
+
+def test_python_dash_m_ignores_current_folder(tmp_path):
+    planted = tmp_path / "cryptography"
+    planted.mkdir()
+    marker = tmp_path / "PWNED"
+    (planted / "__init__.py").write_text(
+        f"open({str(marker)!r}, 'w').write('planted module ran')\n")
+    out = subprocess.run([sys.executable, "-m", "filecrypt", "--version"], cwd=tmp_path,
+                         capture_output=True, text=True)
+    assert out.returncode == 0, out.stderr
+    assert not marker.exists()
