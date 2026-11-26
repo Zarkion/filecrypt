@@ -99,6 +99,20 @@ Integers are little-endian unless noted.
 Not in v1: public-key or multi-recipient encryption, secret sharing, hiding
 file names or sizes.
 
+## Security and compatibility
+
+* [Threat model](docs/threat-model.md): what filecrypt protects (contents and
+  their integrity), what it doesn't (file names, sizes, weak passphrases, a
+  compromised computer), and the known open limitations.
+* [Security policy](SECURITY.md): how to report a vulnerability privately,
+  and which versions get fixes.
+* [Compatibility promise](docs/compatibility.md): every `.fcx` version 1 file
+  stays decryptable by every future release.
+
+`rekey` changes which secret opens a file but keeps the same file key, so it
+doesn't help after a secret has leaked. In that case decrypt and encrypt the
+file again.
+
 ## Writing a key-source plugin
 
 Subclass `filecrypt.sources.KeySource`, implement `get(location, *, confirm)`
