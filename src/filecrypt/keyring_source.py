@@ -53,4 +53,14 @@ class KeyringSource:
         kr = _keyring()
         if kr.get_password(service, name):
             raise KeySourceError(f"keyring entry {service}/{name} already exists")
-        kr.set_password(service, name, encode_stored_key(key))
+        value = encode_stored_key(key)
+        kr.set_password(service, name, value)
+        # OS keyrings have no create-only write, so the check above and the
+        # write are not atomic. Reading the value back catches another writer
+        # whose write lands between our write and this read. That narrows the
+        # race but cannot close it: if the other writer checks before our write
+        # and writes after this read, it replaces our key and neither run sees
+        # an error.
+        if kr.get_password(service, name) != value:
+            raise KeySourceError(f"keyring entry {service}/{name} was changed by another "
+                                 "program while it was being stored; check it before use")
