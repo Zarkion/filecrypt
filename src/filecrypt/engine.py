@@ -286,12 +286,21 @@ def rekey_file(src: PathLike, old_secret: SecretArg, new_secret: SecretArg, *,
                confirm_expensive: Optional[ConfirmExpensive] = None,
                on_stale_parts: Optional[StaleHandler] = None,
                cancel: Optional[CancelToken] = None, max_attempts: int = 1,
-               on_wrong_key: Optional[WrongKeyHandler] = None) -> Path:
-    """Wrap the file key under a new key without re-encrypting the body.
+               on_wrong_key: Optional[WrongKeyHandler] = None,
+               rotate_file_key: bool = False) -> Path:
+    """Change the secret that opens ``src``.
+
+    By default the file key is wrapped under the new secret and the body is
+    copied unchanged, which is fast but doesn't help once the old secret has
+    leaked: the old secret and an old copy of the header still give the file
+    key. With ``rotate_file_key`` a new random file key and nonce prefix are
+    generated and every chunk is authenticated and re-encrypted, so the old
+    secret and old headers become useless for the new file. If any chunk fails
+    authentication, :class:`~filecrypt.container.CorruptedFileError` is raised
+    and nothing is written.
 
     Replaces ``src`` in place unless ``dest`` is given. ``new_secret`` is only
-    requested after ``old_secret`` has unlocked the file. Note that rekeying
-    doesn't help once the old key has leaked: decrypt and re-encrypt instead.
+    requested after ``old_secret`` has unlocked the file.
     """
     options = options or EncryptOptions()
     options.validate()
@@ -313,17 +322,20 @@ def rekey_file(src: PathLike, old_secret: SecretArg, new_secret: SecretArg, *,
         file_key = _unlock(header, old_secret, kdf_memory_limit, confirm_expensive,
                            cancel, max_attempts, on_wrong_key)
         derive, kdf_id, settings = _new_key_block(_resolve(new_secret), options, notify, cancel)
-        new_header = container.rewrap_header(header, file_key, derive_kek=derive,
-                                             kdf_id=kdf_id, settings=settings)
         total = os.fstat(f.fileno()).st_size - header.header_len
         reader = _ProgressReader(f, total, progress, cancel)
         with AtomicOutput(dest, force=in_place or force) as out:
-            out.file.write(new_header)
-            while True:
-                block = reader.read(container.DEFAULT_CHUNK_SIZE)  # fine-grained progress and cancel
-                if not block:
-                    break
-                out.file.write(block)
+            if rotate_file_key:
+                container.reencrypt_body(header, file_key, reader, out.file, derive_kek=derive,
+                                         kdf_id=kdf_id, settings=settings)
+            else:
+                out.file.write(container.rewrap_header(header, file_key, derive_kek=derive,
+                                                       kdf_id=kdf_id, settings=settings))
+                while True:
+                    block = reader.read(container.DEFAULT_CHUNK_SIZE)  # fine-grained progress and cancel
+                    if not block:
+                        break
+                    out.file.write(block)
             reader.finish()
             f.close()  # Windows cannot replace a file that is still open
             _check_cancel(cancel)

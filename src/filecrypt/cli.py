@@ -210,8 +210,10 @@ def cmd_rekey(args) -> dict:
     dest = engine.rekey_file(args.input, old_secret, new_secret, dest=args.output,
                              options=options, force=args.force, notify=_notice,
                              on_stale_parts=_handle_stale_parts,
+                             rotate_file_key=args.rotate_file_key,
                              **_kdf_policy(args), **_retry_policy(args.key))
-    return {"input": args.input, "output": str(dest)}
+    return {"input": args.input, "output": str(dest),
+            "file_key_rotated": args.rotate_file_key}
 
 
 def cmd_verify(args) -> dict:
@@ -353,12 +355,17 @@ def build_parser() -> argparse.ArgumentParser:
     _add_max_kdf_memory(p)
     p.set_defaults(func=cmd_decrypt)
 
-    p = sub.add_parser("rekey", help="change the key of an .fcx file without re-encrypting it",
-                       parents=common)
+    p = sub.add_parser("rekey", parents=common,
+                       help="change the key of an .fcx file (add --rotate-file-key "
+                            "if the old key may have leaked)")
     p.add_argument("input")
     p.add_argument("-o", "--output", help="write to a new file instead of replacing INPUT")
     p.add_argument("--key", default=sources.DEFAULT_SPEC, help="current key; " + KEY_HELP)
     p.add_argument("--new-key", default=sources.DEFAULT_SPEC, help="new key; same forms as --key")
+    p.add_argument("--rotate-file-key", action="store_true",
+                   help="also replace the file key and re-encrypt the whole body, checking "
+                        "every chunk; use this if the old key or passphrase may have leaked "
+                        "(slower: reads and rewrites the whole file)")
     _add_kdf_options(p)
     p.add_argument("--force", action="store_true", help="overwrite an existing -o file")
     _add_max_kdf_memory(p)

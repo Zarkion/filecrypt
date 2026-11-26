@@ -235,3 +235,92 @@ def test_callers_cannot_supply_a_salt():
     with pytest.raises(TypeError):
         c.rewrap_header(h, c.unwrap_file_key(h, KEK), derive_kek=lambda s: KEK,
                         kdf_id=1, settings=SETTINGS, salt=SALT)
+
+
+# --- full rotation (reencrypt_body) -------------------------------------------
+
+NEW_KEK = bytes(range(32, 64))
+
+
+def rotate(blob, kek=KEK, new_kek=NEW_KEK, kdf_id=1, settings=SETTINGS):
+    src = io.BytesIO(blob)
+    header = c.read_header(src)
+    file_key = c.unwrap_file_key(header, kek)
+    out = io.BytesIO()
+    c.reencrypt_body(header, file_key, src, out, derive_kek=lambda salt: new_kek,
+                     kdf_id=kdf_id, settings=settings)
+    return out.getvalue()
+
+
+@pytest.mark.parametrize("size", [0, 1, 4095, 4096, 4097, 3 * 4096, 3 * 4096 + 7])
+def test_rotate_round_trip_and_new_body(size):
+    data = os.urandom(size)
+    old = encrypt(data, chunk_size=4096)
+    new = rotate(old)
+    assert len(new) == len(old)
+    assert decrypt(new, kek=NEW_KEK) == data
+    old_h, new_h = c.read_header(io.BytesIO(old)), c.read_header(io.BytesIO(new))
+    assert new_h.chunk_size == old_h.chunk_size
+    assert new_h.nonce_prefix != old_h.nonce_prefix
+    assert new_h.salt != old_h.salt
+    old_body, new_body = old[old_h.header_len:], new[new_h.header_len:]
+    for i in range(0, len(old_body), 4096 + c.TAG_LEN):  # every chunk changes
+        assert old_body[i:i + 4096 + c.TAG_LEN] != new_body[i:i + 4096 + c.TAG_LEN]
+
+
+def test_rotate_uses_a_new_file_key():
+    old = encrypt(os.urandom(10_000), chunk_size=4096)
+    new = rotate(old)
+    old_key = c.unwrap_file_key(c.read_header(io.BytesIO(old)), KEK)
+    new_key = c.unwrap_file_key(c.read_header(io.BytesIO(new)), NEW_KEK)
+    assert old_key != new_key
+
+
+def test_old_body_rejected_under_new_header():
+    old = encrypt(os.urandom(10_000), chunk_size=4096)
+    new = rotate(old)
+    old_h, new_h = c.read_header(io.BytesIO(old)), c.read_header(io.BytesIO(new))
+    spliced = new[:new_h.header_len] + old[old_h.header_len:]
+    with pytest.raises(c.CorruptedFileError):
+        decrypt(spliced, kek=NEW_KEK)
+    # and the old header can't unlock the new body with the old key either
+    spliced = old[:old_h.header_len] + new[new_h.header_len:]
+    with pytest.raises(c.CorruptedFileError):
+        decrypt(spliced, kek=KEK)
+
+
+@pytest.mark.parametrize("where", ["first", "middle", "last", "truncated", "trailing"])
+def test_rotate_tampered_old_body_raises(where):
+    old = bytearray(encrypt(os.urandom(3 * 4096 + 100), chunk_size=4096))
+    h = c.read_header(io.BytesIO(bytes(old)))
+    full = 4096 + c.TAG_LEN
+    if where == "first":
+        old[h.header_len + 5] ^= 1
+    elif where == "middle":
+        old[h.header_len + full + 5] ^= 1
+    elif where == "last":
+        old[-1] ^= 1
+    elif where == "truncated":
+        del old[-50:]
+    else:
+        old += b"x" * 20
+    with pytest.raises(c.CorruptedFileError):
+        rotate(bytes(old))
+
+
+def test_rotate_drops_redundant_empty_final_chunk():
+    # An old-style file: one full chunk flagged not-last, then an empty last chunk.
+    data = os.urandom(4096)
+    file_key, prefix = os.urandom(32), os.urandom(7)
+    aad = c._chunk_aad(prefix, 4096)
+    aead = c.AESGCM(file_key)
+    out = io.BytesIO()
+    out.write(c._build_key_block(file_key, lambda s: KEK, 1, SETTINGS) + prefix
+              + struct.pack("<I", 4096))
+    out.write(aead.encrypt(c._nonce(prefix, 0, False), data, aad))
+    out.write(aead.encrypt(c._nonce(prefix, 1, True), b"", aad))
+    old = out.getvalue()
+    assert decrypt(old) == data
+    new = rotate(old)
+    assert decrypt(new, kek=NEW_KEK) == data
+    assert len(new) == len(old) - c.TAG_LEN  # written as one full final chunk
