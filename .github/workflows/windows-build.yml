@@ -4,12 +4,19 @@ name: Windows build
 # self-test against it, and uploads the folder as a zip. It also wraps the
 # folder in a per-user Inno Setup installer (packaging/filecrypt.iss) and
 # checks that it installs, registers with Explorer and uninstalls cleanly.
-# Both are unsigned test builds kept as CI artifacts only; this workflow
-# never publishes a release.
+# Both are unsigned test builds. On branches and PRs they stay CI artifacts.
+# Pushing a tag vX.Y.Z also publishes them as a GitHub pre-release with a
+# SHA256SUMS.txt, and every non-PR build gets a build provenance attestation,
+# so a download can be checked against GitHub's record of this workflow:
+#
+#   gh attestation verify <file> --repo Zarkion/filecrypt
+#
+# Code signing needs a certificate, which the project doesn't have yet.
 
 on:
   push:
     branches: [main]
+    tags: ["v*"]  # path filters don't apply to tag pushes
     paths:
       - "src/**"
       - "packaging/**"
@@ -41,11 +48,17 @@ jobs:
     name: portable build (windows x64)
     runs-on: windows-latest
     timeout-minutes: 30
+    permissions:
+      contents: read
+      id-token: write      # OIDC for the provenance attestation
+      attestations: write
+    outputs:
+      version: ${{ steps.zip.outputs.version }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09  # v5
         with:
           persist-credentials: false
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6
         with:
           python-version: "3.13"
           architecture: x64
@@ -78,11 +91,14 @@ jobs:
         id: setup
         shell: pwsh
         run: |
+          # Pinned, so the runner image's copy can't change the installer under us.
+          $innoVersion = "6.7.1"
+          choco install innosetup --version $innoVersion --allow-downgrade --no-progress -y
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
-          if (-not (Test-Path $iscc)) {
-            choco install innosetup --no-progress -y
-            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          }
+          # ISCC.exe's own version resource reads 0.0.0.0, so ask choco.
+          $have = (choco list innosetup --exact --limit-output) -replace '^innosetup\|', ''
+          if ($have -ne $innoVersion) { throw "Inno Setup is '$have', expected $innoVersion" }
           $name = "filecrypt-${{ steps.zip.outputs.version }}-windows-x64-unsigned-${{ steps.zip.outputs.sha }}-setup"
           & $iscc /Qp "/DAppVersion=${{ steps.zip.outputs.version }}" "/DOutputName=$name" packaging/filecrypt.iss
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
@@ -119,7 +135,14 @@ jobs:
             if (Test-Path -LiteralPath $k) { throw "uninstall left $k" }
           }
           "install, register, unregister and uninstall all worked"
-      - uses: actions/upload-artifact@v5
+      - name: Attest build provenance
+        if: github.event_name != 'pull_request'
+        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a  # v3
+        with:
+          subject-path: |
+            ${{ steps.zip.outputs.name }}.zip
+            ${{ steps.setup.outputs.name }}.exe
+      - uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4  # v5
         with:
           name: ${{ steps.zip.outputs.name }}
           path: |
@@ -127,7 +150,7 @@ jobs:
             ${{ steps.zip.outputs.name }}.zip.sha256
           if-no-files-found: error
           retention-days: 14
-      - uses: actions/upload-artifact@v5
+      - uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4  # v5
         with:
           name: ${{ steps.setup.outputs.name }}
           path: |
@@ -135,3 +158,49 @@ jobs:
             ${{ steps.setup.outputs.name }}.exe.sha256
           if-no-files-found: error
           retention-days: 14
+
+  release:
+    name: Publish pre-release
+    needs: build
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write  # create the release
+    steps:
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0  # v5
+        with:
+          pattern: filecrypt-*
+          path: assets
+          merge-multiple: true
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+          VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          if [ "$TAG" != "v$VERSION" ]; then
+            echo "::error::Tag $TAG does not match the package version $VERSION"
+            exit 1
+          fi
+          cd assets
+          cat *.sha256 > SHA256SUMS.txt
+          rm *.sha256
+          sha256sum --check --strict SHA256SUMS.txt
+          cat > notes.md <<EOF
+          Unsigned test build of filecrypt $VERSION for 64-bit Windows 10 and later.
+
+          - \`*-setup.exe\`: per-user installer, no administrator rights needed. Windows SmartScreen will warn that the publisher is unknown, because it isn't code-signed yet.
+          - \`*.zip\`: the same app as a portable folder.
+
+          Check a download before you run it. The hash should match \`SHA256SUMS.txt\`:
+
+              (Get-FileHash .\\<file>).Hash
+
+          The build provenance attestation ties the file to the workflow run that built it, independently of this page (needs the GitHub CLI):
+
+              gh attestation verify <file> --repo $GITHUB_REPOSITORY
+          EOF
+          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --verify-tag --prerelease \
+            --title "filecrypt $VERSION (unsigned test build)" --notes-file notes.md \
+            *.exe *.zip SHA256SUMS.txt

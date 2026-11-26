@@ -1,5 +1,7 @@
-# Keeps the GitHub Actions used by CI (checkout, setup-python, ...) current.
-# Python dependencies are deliberately not tracked here.
+# Keeps the GitHub Actions used by CI (checkout, setup-python, ...) current,
+# and the Python packages bundled into the Windows build (cryptography's
+# OpenSSL, PySide6's Qt, PyInstaller), which are hash-pinned in
+# packaging/requirements-build.txt.
 version: 2
 updates:
   - package-ecosystem: "github-actions"
@@ -12,3 +14,13 @@ updates:
           - "*"
     commit-message:
       prefix: "ci"
+  - package-ecosystem: "pip"
+    directory: "/packaging"
+    schedule:
+      interval: "weekly"
+    groups:
+      windows-build:
+        patterns:
+          - "*"
+    commit-message:
+      prefix: "build"

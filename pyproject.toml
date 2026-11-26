@@ -10,10 +10,16 @@ description = "Encrypt files to the .fcx format (AES-256-GCM STREAM, Argon2id/sc
 readme = "README.md"
 requires-python = ">=3.9"
 license = "MIT"
-dependencies = ["cryptography>=41"]
+# 48.0.1 fixes every advisory for the parts of cryptography filecrypt uses
+# (the newer ones are X.509 and PKCS#7 only). Windows on ARM64 has no wheel
+# after 46.0.3, so it keeps that floor rather than needing Rust to install.
+dependencies = [
+    "cryptography>=48.0.1; sys_platform != 'win32' or platform_machine != 'ARM64'",
+    "cryptography>=46.0.3; sys_platform == 'win32' and platform_machine == 'ARM64'",
+]
 
 [project.optional-dependencies]
-# Only needed when the installed cryptography has no native Argon2id (< 44 or old OpenSSL).
+# Only needed when cryptography was built against an OpenSSL without Argon2 (before 3.2).
 argon2 = ["argon2-cffi>=21.1"]
 keyring = ["keyring>=24"]
 # The desktop window (filecrypt-gui). PySide6-Essentials is the Qt core without add-ons.
