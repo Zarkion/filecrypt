@@ -290,6 +290,7 @@ def test_cli_damaged_message(cli_work, capsys):
 
 def test_cli_prompt_retries_on_a_terminal(cli_work, monkeypatch, capsys):
     monkeypatch.setattr(cli, "_interactive", lambda: True)
+    monkeypatch.setattr(cli, "_can_prompt", lambda: True)
     answers = iter(["nope nope nope", PW.value.decode()])
     monkeypatch.setattr(sources.getpass, "getpass", lambda p="": next(answers))
     assert cli.main(["decrypt", "doc.bin.fcx", "-o", "o.bin"]) == 0
@@ -299,6 +300,7 @@ def test_cli_prompt_retries_on_a_terminal(cli_work, monkeypatch, capsys):
 
 def test_cli_prompt_gives_up_after_three(cli_work, monkeypatch):
     monkeypatch.setattr(cli, "_interactive", lambda: True)
+    monkeypatch.setattr(cli, "_can_prompt", lambda: True)
     calls = []
     monkeypatch.setattr(sources.getpass, "getpass", lambda p="": calls.append(p) or "nope nope nope")
     assert cli.main(["decrypt", "doc.bin.fcx", "-o", "o.bin"]) == 4
