@@ -7,7 +7,7 @@ import time
 
 import pytest
 
-from filecrypt import cli
+from filecrypt import cli, engine
 
 PASS = "a perfectly fine passphrase"
 FAST = ["--argon-memory", "19", "--argon-iterations", "2", "--argon-parallelism", "1"]
@@ -22,7 +22,7 @@ def test_killed_process_leaves_no_part_file(tmp_path):
     script = textwrap.dedent(f"""
         import sys, time
         from pathlib import Path
-        from filecrypt.cli import AtomicOutput
+        from filecrypt.engine import AtomicOutput
         with AtomicOutput(Path(r"{tmp_path}") / "out.txt", force=False) as out:
             out.file.write(b"plaintext that must not survive")
             out.file.flush()
@@ -50,7 +50,7 @@ def test_killed_process_leaves_no_part_file(tmp_path):
 def test_falls_back_when_delete_on_close_unsupported(tmp_path, monkeypatch):
     from filecrypt import _windelete
     monkeypatch.setattr(_windelete, "set_delete_on_close", lambda fd, enabled: False)
-    with cli.AtomicOutput(tmp_path / "out.txt", force=False) as out:
+    with engine.AtomicOutput(tmp_path / "out.txt", force=False) as out:
         out.file.write(b"data")
         out.commit()
     assert (tmp_path / "out.txt").read_bytes() == b"data"
@@ -58,11 +58,11 @@ def test_falls_back_when_delete_on_close_unsupported(tmp_path, monkeypatch):
 
 
 def test_commit_and_abort_leave_no_part(tmp_path):
-    with cli.AtomicOutput(tmp_path / "ok.txt", force=False) as out:
+    with engine.AtomicOutput(tmp_path / "ok.txt", force=False) as out:
         out.file.write(b"data")
         out.commit()
     with pytest.raises(RuntimeError):
-        with cli.AtomicOutput(tmp_path / "bad.txt", force=False) as out:
+        with engine.AtomicOutput(tmp_path / "bad.txt", force=False) as out:
             out.file.write(b"data")
             raise RuntimeError("boom")
     assert (tmp_path / "ok.txt").read_bytes() == b"data"

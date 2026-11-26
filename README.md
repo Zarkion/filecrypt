@@ -99,6 +99,34 @@ Integers are little-endian unless noted.
 Not in v1: public-key or multi-recipient encryption, secret sharing, hiding
 file names or sizes.
 
+## Using filecrypt from Python
+
+`filecrypt.engine` is the layer the CLI is built on, meant for other
+front-ends such as a GUI. It never prints or prompts: the secret can be a
+callable that is only invoked once the input, output and KDF cost checks have
+passed, and progress, notices and confirmations go through callbacks.
+
+```python
+from filecrypt import engine
+from filecrypt.kdf import Secret
+
+def ask_password():                      # called only when it's actually needed
+    return Secret(my_dialog().encode("utf-8"), "passphrase")
+
+engine.encrypt_file("report.pdf", "report.pdf.fcx", ask_password,
+                    progress=lambda done, total: bar.update(done, total),
+                    notify=show_warning)
+
+info = engine.inspect_file("report.pdf.fcx")   # needs a "key" or a "passphrase"?
+engine.decrypt_file("report.pdf.fcx", "report.pdf", ask_password,
+                    confirm_expensive=lambda reason: yes_no_dialog(reason))
+```
+
+Errors a user should see derive from `engine.EngineError`
+(`OutputExistsError`, `SameFileError`, `ExpensiveKDFError`, `Cancelled`,
+`InputError`), alongside `container.FormatError`, `container.AuthenticationError`
+and `kdf.KDFError`.
+
 ## Writing a key-source plugin
 
 Subclass `filecrypt.sources.KeySource`, implement `get(location, *, confirm)`

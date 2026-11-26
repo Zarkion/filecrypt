@@ -308,7 +308,8 @@ def no_derive(monkeypatch):
         calls.append(kdf_id)
         return b"\x00" * 32  # wrong KEK: decrypt then fails authentication
 
-    monkeypatch.setattr(cli.kdf, "derive_kek", fake)
+    from filecrypt import kdf as kdf_mod
+    monkeypatch.setattr(kdf_mod, "derive_kek", fake)
     return calls
 
 
