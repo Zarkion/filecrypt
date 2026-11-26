@@ -117,7 +117,12 @@ jobs:
               tests/test_kdf.py::test_select_rejects_argon_below_floor \
               tests/test_kdf.py::test_select_short_key_rejected_unless_passphrase_mode \
               tests/test_kdf.py::test_keyfile_is_passphrase_forces_passphrase_kdf_even_for_long_keys \
-              tests/test_keyring_source.py::test_example_passphrase_in_keyring_goes_through_argon2
+              tests/test_keyring_source.py::test_example_passphrase_in_keyring_goes_through_argon2 \
+              tests/test_engine.py::test_inspect_file \
+              tests/test_engine.py::test_short_key_rejected_unless_passphrase_mode \
+              tests/test_engine.py::test_expensive_refused_without_confirm \
+              tests/test_engine.py::test_expensive_accepted \
+              tests/test_engine.py::test_expensive_within_explicit_limit
             do deselect+=(--deselect "$t"); done
           fi
           python -m pytest -rs --junitxml=junit.xml "${deselect[@]}" tests plugins/filecrypt-azkv/tests
