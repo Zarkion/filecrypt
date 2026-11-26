@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
+import html
 import os
 from pathlib import Path
 from typing import List, Optional
@@ -9,16 +11,22 @@ from typing import List, Optional
 from PySide6.QtCore import Qt, QUrl, Signal
 from PySide6.QtGui import QDesktopServices, QDragEnterEvent, QDropEvent, QKeySequence, QShortcut
 from PySide6.QtWidgets import (QCheckBox, QFileDialog, QFormLayout, QFrame, QGridLayout,
-                               QHBoxLayout, QInputDialog, QLabel, QLineEdit, QMainWindow,
-                               QMessageBox, QProgressBar, QPushButton, QSizePolicy, QSpinBox,
-                               QStackedWidget, QToolButton, QVBoxLayout, QWidget)
+                               QHBoxLayout, QInputDialog, QLabel, QLineEdit, QListWidget,
+                               QMainWindow, QMessageBox, QProgressBar, QPushButton,
+                               QSizePolicy, QSpinBox, QStackedWidget, QToolButton,
+                               QVBoxLayout, QWidget)
 
-from .. import engine, kdf
+from .. import _motw, engine, kdf
 from ..container import FormatError
 from ..kdf import Argon2Params, KDFError
 from . import strength
+from .batch import TEST, BatchJob
 from .worker import (ASK_EXPENSIVE, ASK_PASSWORD, ASK_STALE, DECRYPT, ENCRYPT, Failure,
                      Job, JobSpec)
+
+_VERBS = {ENCRYPT: ("Encrypt", "Encrypting", "encrypted"),
+          DECRYPT: ("Decrypt", "Decrypting", "decrypted"),
+          TEST: ("Test", "Testing", "tested")}
 
 _METER_COLORS = ("#d93025", "#e8710a", "#f9ab00", "#1e8e3e", "#137333")
 
@@ -87,7 +95,7 @@ class DropZone(QFrame):
 
 
 class MainWindow(QMainWindow):
-    """One window, one file at a time.
+    """One window, one file or one batch of files with one password.
 
     Every dialog goes through a small method (``confirm``, ``ask_password_again``,
     ``choose_open_path``, ``choose_save_path``) so tests can replace them.
@@ -98,10 +106,18 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("filecrypt")
         self.setAcceptDrops(True)
         self.src: Optional[Path] = None
+        self.batch: List[Path] = []        # every file the next run works on (src first)
         self.mode: Optional[str] = None
         self.needs_keyfile = False
         self.job: Optional[Job] = None
         self.last_output: Optional[Path] = None
+        self._queue: List[JobSpec] = []    # specs still to run in this batch
+        self._done: List[Path] = []        # outputs (or tested files) of this batch
+        self._problems: List[str] = []     # "name: why" for files that failed
+        self._motw_failed: List[str] = []
+        self._pending: Optional[tuple] = None   # a request that arrived while busy
+        self._total = 0                    # files in the running batch
+        self._not_run: List[str] = []
         self._build()
         self._refresh()
 
@@ -118,6 +134,13 @@ class MainWindow(QMainWindow):
         self.drop.file_dropped.connect(self.files_dropped)
         self.drop.choose_clicked.connect(self._choose_file)
         root.addWidget(self.drop)
+
+        # The files of a batch, listed in full for the person to check.
+        self.batch_list = QListWidget()
+        self.batch_list.setVisible(False)
+        self.batch_list.setMaximumHeight(140)
+        self.batch_list.setSelectionMode(QListWidget.NoSelection)
+        root.addWidget(self.batch_list)
 
         # Password pages: encrypt (with confirm, meter, warning) and decrypt.
         self.pages = QStackedWidget()
@@ -325,10 +348,137 @@ class MainWindow(QMainWindow):
     def files_dropped(self, paths: List[Path]) -> None:
         if self._busy():
             return
-        self.set_file(paths[0])
-        if len(paths) > 1:
-            self._show(f"filecrypt works on one file at a time, so only {paths[0].name} "
-                       f"was picked.", "info")
+        if len(paths) == 1:
+            self.set_file(paths[0])
+        else:
+            self._listed_action = None      # a drop starts a new list
+            self.open_request("open", paths)
+
+    # --- several files (Explorer, drag and drop) --------------------------------------
+
+    _listed_action: Optional[str] = None    # the request that built the current list
+
+    def open_request(self, action: str, paths) -> None:
+        """Show files from the command line or another filecrypt process.
+
+        ``action`` is "encrypt", "decrypt", "test" or "open" (pick by file type).
+        Requests for the same action that arrive before the person starts are
+        added to the list, because Explorer starts one process per selected file.
+        """
+        new = [Path(p) for p in paths]
+        if not new:
+            return
+        if self._busy():
+            if self._pending is not None and self._pending[0] == action:
+                new = self._pending[1] + new
+            self._pending = (action, new)
+            return
+        self._bring_to_front()
+        if action == self._listed_action and self.batch:
+            new = self.batch + new
+        seen, files = set(), []
+        for p in new:
+            key = os.path.normcase(os.path.abspath(p))
+            if key not in seen:
+                seen.add(key)
+                files.append(p)
+        if action == "open" and len(files) == 1:
+            self.set_file(files[0])
+            self._listed_action = action
+            return
+        self._load(action, files)
+        self._listed_action = action
+
+    def _bring_to_front(self) -> None:
+        if self.isMinimized():
+            self.showNormal()
+        self.raise_()
+        self.activateWindow()
+
+    def _load(self, action: str, files: List[Path]) -> None:
+        """Check every file for ``action`` and list the ones that can be done."""
+        self._clear_status()
+        self.src, self.batch, self.mode, self.needs_keyfile = None, [], None, False
+        ok: List[Path] = []
+        modes, needs, problems = set(), set(), []
+        for p in files:
+            if p.is_dir():
+                problems.append((p, "it's a folder; put it in a .zip file first"))
+                continue
+            try:
+                info = engine.inspect_file(p)
+            except engine.InputError as e:
+                problems.append((p, f"couldn't open it ({e})"))
+                continue
+            except (FormatError, KDFError):
+                info = None
+            if action == ENCRYPT:
+                mode = ENCRYPT
+            elif info is not None:
+                mode = DECRYPT if action == "open" else action
+            elif action == "open" and not p.name.lower().endswith(engine.FCX_SUFFIX):
+                mode = ENCRYPT
+            else:
+                problems.append((p, "it isn't a file filecrypt can decrypt, or its "
+                                    "beginning is damaged"))
+                continue
+            modes.add(mode)
+            if mode != ENCRYPT:
+                needs.add(info.needs)
+            ok.append(p)
+        if len(modes) > 1:
+            self._show("Some of these files are encrypted and some aren't. Encrypt and "
+                       "decrypt them separately.", "error")
+            ok = []
+        elif needs == {"key", "passphrase"}:
+            self._show("Some of these files were locked with a keyfile and some with a "
+                       "password. Open them separately.", "error")
+            ok = []
+        if ok:
+            self._apply(modes.pop(), ok, needs == {"key"})
+        else:
+            self.batch_list.setVisible(False)
+        if problems:
+            lines = "".join(f"<br>&bull; {html.escape(p.name)}: {html.escape(why)}"
+                            for p, why in problems)
+            skipped = "This file was" if len(problems) == 1 else "These files were"
+            self._show(f"{skipped} left out:{lines}", "error" if not ok else "info")
+        self._refresh()
+
+    def _apply(self, mode: str, files: List[Path], needs_key: bool) -> None:
+        self.src, self.batch, self.mode, self.needs_keyfile = files[0], files, mode, needs_key
+        n = len(files)
+        self.drop.title.setText(files[0].name if n == 1 else f"{n} files")
+        if mode == ENCRYPT:
+            detail = (f"Will be encrypted to {files[0].name}{engine.FCX_SUFFIX}. The original "
+                      f"file is kept." if n == 1 else
+                      "Each file will be encrypted to a .fcx file next to it, with the same "
+                      "password. The originals are kept.")
+        elif mode == DECRYPT:
+            detail = ("Encrypted file. Will be decrypted next to it." if n == 1 else
+                      "Encrypted files. Each will be decrypted next to it.")
+        else:
+            detail = ("Will check that the password opens " + ("this file" if n == 1 else
+                      "every file") + " and that nothing in it was damaged or changed. "
+                      "Nothing is written.")
+        self.drop.detail.setText(detail)
+        self.batch_list.clear()
+        for p in files:
+            self.batch_list.addItem(os.fspath(p))
+        self.batch_list.setVisible(n > 1)
+        self.pages.setCurrentIndex(0 if mode == ENCRYPT else 1)
+        if needs_key:
+            self.use_keyfile.setChecked(True)
+            self.advanced_toggle.setChecked(True)
+            self._show("These files were locked with a keyfile, not a password. Choose the "
+                       "keyfile under Advanced." if n > 1 else
+                       "This file was locked with a keyfile, not a password. Choose the "
+                       "keyfile under Advanced.", "info")
+        elif mode == ENCRYPT:
+            self.enc_password.setFocus()
+        else:
+            self.dec_password.setFocus()
+        self.drop.choose.setText("Choose another file…")
 
     def dragEnterEvent(self, event: QDragEnterEvent) -> None:
         self.drop.dragEnterEvent(event)
@@ -341,6 +491,9 @@ class MainWindow(QMainWindow):
         path = Path(path)
         self._clear_status()
         self.src, self.mode, self.needs_keyfile = None, None, False
+        self.batch = []
+        self._listed_action = None
+        self.batch_list.setVisible(False)
         if path.is_dir():
             self._show("That's a folder. filecrypt encrypts one file at a time; to protect a "
                        "folder, put it in a .zip file first.", "error")
@@ -360,6 +513,7 @@ class MainWindow(QMainWindow):
                 return
             info = None
         self.src = path
+        self.batch = [path]
         if info is None:
             self.mode = ENCRYPT
             self.drop.title.setText(path.name)
@@ -440,7 +594,7 @@ class MainWindow(QMainWindow):
         keyfile_mode = self.use_keyfile.isChecked()
         if keyfile_mode and self._keyfile() is None:
             return "Choose a keyfile."
-        if self.mode == DECRYPT:
+        if self.mode in (DECRYPT, TEST):
             if self.needs_keyfile and not keyfile_mode:
                 return "This file needs its keyfile."
             if not keyfile_mode and not self.dec_password.text():
@@ -458,7 +612,7 @@ class MainWindow(QMainWindow):
     def _refresh(self) -> None:
         busy = self._busy()
         keyfile_mode = self.use_keyfile.isChecked()
-        self.action.setText("Decrypt" if self.mode == DECRYPT else "Encrypt")
+        self.action.setText(_VERBS.get(self.mode, _VERBS[ENCRYPT])[0])
         reason = self.ready_reason()
         self.action.setEnabled(not busy and reason is None)
         self.action.setToolTip(reason or "")
@@ -471,7 +625,7 @@ class MainWindow(QMainWindow):
         self.keyfile_path.setEnabled(keyfile_mode)
         self.keyfile_browse.setEnabled(keyfile_mode)
         self.keyfile_is_passphrase.setEnabled(keyfile_mode)
-        self.argon_box.setVisible(self.mode != DECRYPT)
+        self.argon_box.setVisible(self.mode not in (DECRYPT, TEST))
         both = self.enc_password.text() and self.enc_confirm.text()
         if not keyfile_mode and both and self.enc_password.text() != self.enc_confirm.text():
             self.match_label.setText("\u2717 The passwords don't match.")
@@ -521,38 +675,59 @@ class MainWindow(QMainWindow):
             return
         self._clear_status()
         keyfile = self._keyfile()
-        if self.mode == ENCRYPT:
-            dest = engine.default_encrypt_output(self.src)
-            if keyfile is None:
-                s = strength.estimate(self.enc_password.text())
-                if s.score < 2 and not self.confirm(
-                        "Weak password",
-                        f"This password is {s.label.lower()}. Someone who gets the encrypted "
-                        f"file could guess it. Use it anyway?"):
-                    return
-        else:
-            dest = engine.default_decrypt_output(self.src)
-            if dest is None:
-                dest = self.choose_save_path(self.src.with_name(self.src.name + ".decrypted"))
-                if dest is None:
-                    return
-        force = False
-        if dest.exists():
-            if not self.confirm("Replace file?", f"{dest.name} already exists. Replace it?"):
+        if self.mode == ENCRYPT and keyfile is None:
+            s = strength.estimate(self.enc_password.text())
+            if s.score < 2 and not self.confirm(
+                    "Weak password",
+                    f"This password is {s.label.lower()}. Someone who gets the encrypted "
+                    f"file could guess it. Use it anyway?"):
                 return
-            force = True
-        spec = JobSpec(
-            mode=self.mode, src=self.src, dest=dest,
-            password=None if keyfile else (self.enc_password.text() if self.mode == ENCRYPT
-                                           else self.dec_password.text()),
-            keyfile=keyfile,
+        files = self.batch or [self.src]
+        targets = []
+        for src in files:
+            if self.mode == ENCRYPT:
+                dest = engine.default_encrypt_output(src)
+            elif self.mode == TEST:
+                dest = src            # nothing is written
+            else:
+                dest = engine.default_decrypt_output(src)
+                if dest is None:
+                    dest = self.choose_save_path(src.with_name(src.name + ".decrypted"))
+                    if dest is None:
+                        return
+            targets.append((src, dest))
+        existing = [d for _, d in targets if self.mode != TEST and d.exists()]
+        if len(existing) == 1:
+            if not self.confirm("Replace file?",
+                                f"{existing[0].name} already exists. Replace it?"):
+                return
+        elif existing:
+            names = "\n".join(d.name for d in existing[:10])
+            if len(existing) > 10:
+                names += f"\n…and {len(existing) - 10} more"
+            if not self.confirm("Replace files?",
+                                f"These files already exist:\n\n{names}\n\nReplace them?"):
+                return
+        password = None if keyfile else (self.enc_password.text() if self.mode == ENCRYPT
+                                         else self.dec_password.text())
+        specs = [JobSpec(
+            mode=self.mode, src=src, dest=dest, password=password, keyfile=keyfile,
             keyfile_is_passphrase=self.keyfile_is_passphrase.isChecked(),
             argon=self._argon() if self.mode == ENCRYPT else None,
-            force=force)
-        self.run_job(spec)
+            force=dest in existing) for src, dest in targets]
+        self.run_batch(specs)
 
-    def run_job(self, spec: JobSpec) -> Job:
-        job = Job(spec, self)
+    def run_batch(self, specs: List[JobSpec]) -> None:
+        self._total, self._done, self._problems = len(specs), [], []
+        self._not_run, self._motw_failed = [], []
+        self._queue = list(specs[1:])
+        self.run_job(specs[0], _continuing=True)
+
+    def run_job(self, spec: JobSpec, _continuing: bool = False) -> Job:
+        if not _continuing:      # one job on its own
+            self._total, self._done, self._problems = 1, [], []
+            self._not_run, self._motw_failed, self._queue = [], [], []
+        job = BatchJob(spec, self)
         job.progress.connect(self._on_progress)
         job.notice.connect(lambda m: self._show(m, "info"))
         job.question.connect(self._on_question)
@@ -562,7 +737,8 @@ class MainWindow(QMainWindow):
         job.finished.connect(self._on_finished)
         self.job = job
         self.progress.setValue(0)
-        self.progress.setFormat("Unlocking…" if spec.mode == DECRYPT else "Preparing…")
+        self.progress.setFormat(self._file_prefix() +
+                                ("Preparing…" if spec.mode == ENCRYPT else "Unlocking…"))
         self._refresh()
         job.start()
         return job
@@ -575,8 +751,13 @@ class MainWindow(QMainWindow):
 
     def _on_progress(self, permille: int, total: int) -> None:
         self.progress.setValue(permille)
-        verb = "Encrypting" if self.mode == ENCRYPT else "Decrypting"
-        self.progress.setFormat(f"{verb}… {permille // 10}%")
+        verb = _VERBS.get(self.mode, _VERBS[ENCRYPT])[1]
+        self.progress.setFormat(f"{self._file_prefix()}{verb}… {permille // 10}%")
+
+    def _file_prefix(self) -> str:
+        if self._total <= 1:
+            return ""
+        return f"File {self._total - len(self._queue)} of {self._total}: "
 
     def _on_question(self, kind: str, payload) -> None:
         job = self.sender()
@@ -606,24 +787,99 @@ class MainWindow(QMainWindow):
         self.progress.setFormat("Wrong password, asking again…")
 
     def _on_succeeded(self, dest: Path) -> None:
-        self.last_output = Path(dest)
+        job = self.job
+        dest = Path(dest)
+        if self.mode in (ENCRYPT, DECRYPT) and job is not None:
+            # Carry "downloaded from the internet" over, so encrypting and
+            # decrypting can't be used to strip it.
+            if _motw.copy_zone_identifier(job.spec.src, dest) is False:
+                self._motw_failed.append(dest.name)
+        self._done.append(dest)
+        if self.mode != TEST:
+            self.last_output = dest
+        if self._queue:
+            if job is not None and job.spec.keyfile is None and isinstance(job, BatchJob):
+                # If the person had to retype the password, use the one that worked.
+                self._queue = [replace(s, password=job.password) for s in self._queue]
+            return
+        if self._total > 1:
+            self._show_summary()
+            return
+        name = html.escape(dest.name)
         if self.mode == ENCRYPT:
-            text = (f"Done. Encrypted to <b>{self.last_output.name}</b>. The original file "
+            text = (f"Done. Encrypted to <b>{name}</b>. The original file "
                     f"is unchanged; delete it yourself if you only want the encrypted copy.")
+        elif self.mode == TEST:
+            text = (f"<b>{name}</b> is intact: the password is right and the file hasn't "
+                    f"been damaged or changed since it was encrypted.")
         else:
-            text = f"Done. Decrypted to <b>{self.last_output.name}</b>."
+            text = f"Done. Decrypted to <b>{name}</b>."
+        text += self._motw_note()
         self._show(text, "ok")
-        self.open_folder.setVisible(True)
+        self._after_success()
+
+    def _after_success(self) -> None:
+        self.open_folder.setVisible(self.last_output is not None and self.mode != TEST)
         self.enc_password.clear()
         self.enc_confirm.clear()
         self.dec_password.clear()
         self.understand.setChecked(False)
 
+    def _motw_note(self) -> str:
+        if not self._motw_failed:
+            return ""
+        names = ", ".join(html.escape(n) for n in self._motw_failed)
+        return (f"<br>Windows' \"downloaded from the internet\" mark couldn't be copied to "
+                f"{names} (the drive may not support it). Be careful opening it.")
+
+    def _failure_text(self, failure: Failure) -> str:
+        if self.mode == TEST and failure.kind == "corrupted":
+            return ("This file is damaged or has been changed since it was encrypted. Your "
+                    "password was right. If you have another copy of the encrypted file, "
+                    "test that one.")
+        return failure.message
+
     def _on_failed(self, failure: Failure) -> None:
-        self._show(failure.message, "info" if failure.kind == "cancelled" else "error")
-        if failure.kind == "wrong_key" and self.mode == DECRYPT:
+        job = self.job
+        if self._total <= 1:
+            self._show(self._failure_text(failure),
+                       "info" if failure.kind == "cancelled" else "error")
+        else:
+            name = job.spec.src.name if job is not None else "?"
+            self._problems.append(f"{name}: {self._failure_text(failure)}")
+            if failure.kind in ("cancelled", "wrong_key"):
+                # Stop here: a cancel means stop, and a password that failed on one
+                # file after every retry won't open the rest either.
+                self._not_run = [s.src.name for s in self._queue]
+                self._queue = []
+            if not self._queue:
+                self._show_summary()
+        if failure.kind == "wrong_key" and self.mode in (DECRYPT, TEST):
             self.dec_password.selectAll()
             self.dec_password.setFocus()
+
+    def _show_summary(self) -> None:
+        verb = _VERBS[self.mode][2]
+        n, ok = self._total, len(self._done)
+        if self.mode == TEST and ok == n:
+            text = (f"All {n} files are intact: the password is right and none of them was "
+                    f"damaged or changed since it was encrypted.")
+        elif ok == n:
+            text = f"Done. All {n} files {verb}."
+            if self.mode == ENCRYPT:
+                text += " The originals are unchanged."
+        else:
+            text = f"{ok} of {n} files {verb}."
+        for line in self._problems:
+            text += f"<br>&bull; {html.escape(line)}"
+        if self._not_run:
+            text += (f"<br>Not started: {html.escape(', '.join(self._not_run))}.")
+        text += self._motw_note()
+        self._show(text, "ok" if ok == n else "error")
+        if ok == n:
+            self._after_success()
+        elif ok:
+            self.open_folder.setVisible(self.mode != TEST and self.last_output is not None)
 
     def _on_finished(self) -> None:
         job = self.job
@@ -631,7 +887,18 @@ class MainWindow(QMainWindow):
         self.cancel_button.setEnabled(True)
         if job is not None:
             job.deleteLater()
+        if self._queue:
+            self.run_job(self._queue.pop(0), _continuing=True)
+            return
         self._refresh()
+        if self._pending is not None:
+            action, paths = self._pending
+            self._pending = None
+            self._listed_action = None
+            summary = (self.status.text(), self.status.property("kind"))
+            self.open_request(action, paths)
+            if summary[0] and not self.status.text():
+                self._show(summary[0], summary[1] or "info")
 
     def _open_output_folder(self) -> None:
         if self.last_output is not None:

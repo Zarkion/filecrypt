@@ -181,13 +181,14 @@ def test_cancel_during_encrypt_leaves_nothing(win, qtbot, tmp_path):
     assert win.action.isEnabled()                 # ready to try again
 
 
-def test_multiple_files_dropped_picks_first(win, tmp_path):
+def test_multiple_files_dropped_become_a_batch(win, tmp_path):
     a, b = tmp_path / "a.txt", tmp_path / "b.txt"
     a.write_text("a")
     b.write_text("b")
     win.files_dropped([a, b])
-    assert win.src == a
-    assert "one file at a time" in win.status.text()
+    assert win.src == a and win.batch == [a, b]
+    assert win.mode == ENCRYPT
+    assert win.batch_list.count() == 2
 
 
 def test_folder_is_refused(win, tmp_path):
