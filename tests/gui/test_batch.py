@@ -216,7 +216,7 @@ def test_test_verb_reports_an_intact_file(win, qtbot, tmp_path):
     f = encrypted(tmp_path, "a.txt")
     before = sorted(p.name for p in tmp_path.iterdir())
     win.open_request("test", [f])
-    assert win.mode == TEST and win.action.text() == "Test"
+    assert win.mode == TEST and win.action.text() == "Verify"
     win.dec_password.setText(PW)
     run(qtbot, win)
     kind, text = status(win)

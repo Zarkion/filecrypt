@@ -347,3 +347,64 @@ def test_passphrase_secret_matches_cli_encoding():
     s = worker.passphrase_secret("café au lait")
     assert s.kind == "passphrase"
     assert s.value in ("café au lait".encode(), "café au lait".encode())
+
+
+# --- Verify (check without writing) ----------------------------------------------------
+
+def verify(qtbot, w):
+    assert w.verify_button.isVisible() and w.verify_button.isEnabled(), w.ready_reason()
+    w.verify_button.click()
+    qtbot.waitUntil(lambda: w.job is None, timeout=WAIT)
+
+
+def test_verify_button_only_for_encrypted_files(win, doc, tmp_path):
+    win.show()
+    win.set_file(doc)
+    assert not win.verify_button.isVisible()
+    win.set_file(encrypted(tmp_path))
+    assert win.verify_button.isVisible() and not win.verify_button.isEnabled()
+    win.dec_password.setText(PW)
+    assert win.verify_button.isEnabled()
+
+
+def test_verify_writes_nothing_and_keeps_decrypt_ready(win, qtbot, tmp_path):
+    win.show()
+    fcx = encrypted(tmp_path)
+    before = sorted(p.name for p in tmp_path.iterdir())
+    win.set_file(fcx)
+    win.dec_password.setText(PW)
+    verify(qtbot, win)
+    kind, text = status(win)
+    assert kind == "ok" and "intact" in text, text
+    assert sorted(p.name for p in tmp_path.iterdir()) == before
+    # Back to decrypting, password kept, so Decrypt works straight after.
+    assert win.mode == DECRYPT and win.action.text() == "Decrypt"
+    assert win.dec_password.text() == PW
+    run(qtbot, win)
+    assert (tmp_path / "secret.txt").read_bytes() == DATA
+
+
+def test_verify_finds_damage(win, qtbot, tmp_path):
+    win.show()
+    fcx = encrypted(tmp_path)
+    b = bytearray(fcx.read_bytes())
+    b[-100] ^= 1
+    fcx.write_bytes(bytes(b))
+    win.set_file(fcx)
+    win.dec_password.setText(PW)
+    verify(qtbot, win)
+    kind, text = status(win)
+    assert kind == "error" and "damaged" in text and "password was right" in text
+    assert win.mode == DECRYPT
+    assert leftovers(tmp_path) == []
+
+
+def test_verify_wrong_password(win, qtbot, tmp_path):
+    win.show()
+    asked = []
+    win.ask_password_again = lambda attempt: asked.append(attempt)   # then Cancel
+    win.set_file(encrypted(tmp_path))
+    win.dec_password.setText("not it")
+    verify(qtbot, win)
+    assert asked and "Cancelled" in status(win)[1]
+    assert win.mode == DECRYPT and not (tmp_path / "secret.txt").exists()

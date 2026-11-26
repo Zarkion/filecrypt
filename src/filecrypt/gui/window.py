@@ -26,7 +26,7 @@ from .worker import (ASK_EXPENSIVE, ASK_PASSWORD, ASK_STALE, DECRYPT, ENCRYPT, F
 
 _VERBS = {ENCRYPT: ("Encrypt", "Encrypting", "encrypted"),
           DECRYPT: ("Decrypt", "Decrypting", "decrypted"),
-          TEST: ("Test", "Testing", "tested")}
+          TEST: ("Verify", "Verifying", "verified")}
 
 _METER_COLORS = ("#d93025", "#e8710a", "#f9ab00", "#1e8e3e", "#137333")
 
@@ -118,6 +118,7 @@ class MainWindow(QMainWindow):
         self._pending: Optional[tuple] = None   # a request that arrived while busy
         self._total = 0                    # files in the running batch
         self._not_run: List[str] = []
+        self._verify_from: Optional[str] = None  # mode to go back to after "Verify"
         self._build()
         self._refresh()
 
@@ -196,6 +197,12 @@ class MainWindow(QMainWindow):
         self.reason_label = QLabel()
         self.reason_label.setEnabled(False)  # greyed-out hint next to the button
         brow.addWidget(self.reason_label)
+        self.verify_button = QPushButton("Verify")
+        self.verify_button.setToolTip("Check the password and that the file is undamaged, "
+                                      "without decrypting it. Nothing is written.")
+        self.verify_button.setVisible(False)
+        self.verify_button.clicked.connect(self.verify)
+        brow.addWidget(self.verify_button)
         self.action = QPushButton("Encrypt")
         self.action.setDefault(True)
         self.action.setMinimumWidth(140)
@@ -616,6 +623,8 @@ class MainWindow(QMainWindow):
         reason = self.ready_reason()
         self.action.setEnabled(not busy and reason is None)
         self.action.setToolTip(reason or "")
+        self.verify_button.setVisible(self.mode == DECRYPT and self.src is not None)
+        self.verify_button.setEnabled(not busy and reason is None)
         for w in (self.drop, self.pages, self.show_password, self.advanced):
             w.setEnabled(not busy)
         self.pages.setVisible(self.src is not None)
@@ -716,6 +725,20 @@ class MainWindow(QMainWindow):
             argon=self._argon() if self.mode == ENCRYPT else None,
             force=dest in existing) for src, dest in targets]
         self.run_batch(specs)
+
+    def verify(self) -> None:
+        """Run the decrypt form as a check only: unlock and authenticate, write nothing."""
+        if self.mode != DECRYPT or self._busy() or self.ready_reason() is not None:
+            return
+        self._verify_from, self.mode = self.mode, TEST
+        self.start()
+        if self.job is None:           # nothing started; go back to decrypting
+            self._end_verify()
+
+    def _end_verify(self) -> None:
+        if self._verify_from is not None:
+            self.mode, self._verify_from = self._verify_from, None
+            self._refresh()
 
     def run_batch(self, specs: List[JobSpec]) -> None:
         self._total, self._done, self._problems = len(specs), [], []
@@ -820,6 +843,8 @@ class MainWindow(QMainWindow):
 
     def _after_success(self) -> None:
         self.open_folder.setVisible(self.last_output is not None and self.mode != TEST)
+        if self._verify_from is not None:
+            return                     # keep the password: decrypting is likely next
         self.enc_password.clear()
         self.enc_confirm.clear()
         self.dec_password.clear()
@@ -836,7 +861,7 @@ class MainWindow(QMainWindow):
         if self.mode == TEST and failure.kind == "corrupted":
             return ("This file is damaged or has been changed since it was encrypted. Your "
                     "password was right. If you have another copy of the encrypted file, "
-                    "test that one.")
+                    "verify that one.")
         return failure.message
 
     def _on_failed(self, failure: Failure) -> None:
@@ -890,6 +915,7 @@ class MainWindow(QMainWindow):
         if self._queue:
             self.run_job(self._queue.pop(0), _continuing=True)
             return
+        self._end_verify()
         self._refresh()
         if self._pending is not None:
             action, paths = self._pending
