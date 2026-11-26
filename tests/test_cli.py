@@ -44,6 +44,7 @@ def files_in(d):
 
 # --- encrypt / decrypt -------------------------------------------------------
 
+@pytest.mark.requires_argon2
 def test_round_trip_env_passphrase(work):
     assert cli.main(["encrypt", "plain.txt", "--key", "env:FC_PASS", *FAST]) == 0
     assert (work / "plain.txt.fcx").exists()
@@ -62,6 +63,7 @@ def test_round_trip_keyfile(work, keyfile):
     assert (work / "back.txt").read_bytes() == (work / "plain.txt").read_bytes()
 
 
+@pytest.mark.requires_argon2
 def test_default_argon_settings(work):
     assert cli.main(["encrypt", "plain.txt", "--key", "env:FC_PASS"]) == 0
     assert Argon2Params.decode(header_of(work / "plain.txt.fcx").settings) == Argon2Params.default()
@@ -103,6 +105,7 @@ def test_short_passphrase_warns(work, monkeypatch, capsys):
     assert "12" in capsys.readouterr().err
 
 
+@pytest.mark.requires_argon2
 def test_short_keyfile_rejected_unless_flag(work):
     (work / "weak.key").write_bytes(b"x" * 20)
     assert cli.main(["encrypt", "plain.txt", "--key", "file:weak.key"]) == 1
@@ -235,6 +238,7 @@ def test_rekey_in_place_passphrase_to_keyfile(work, keyfile):
     assert files_in(work) == sorted(["a.txt", "k.key", "plain.txt", "plain.txt.fcx"])
 
 
+@pytest.mark.requires_argon2
 def test_rekey_argon_settings(work, monkeypatch):
     assert cli.main(["encrypt", "plain.txt", "--key", "env:FC_PASS", *FAST]) == 0
     monkeypatch.setenv("FC_NEW", "another good passphrase")
@@ -313,6 +317,7 @@ def no_derive(monkeypatch):
     return calls
 
 
+@pytest.mark.requires_argon2
 def test_heavy_file_refused_when_not_interactive(heavy_file, no_prompt, no_derive, capsys):
     assert cli.main(["decrypt", str(heavy_file), "-o", "out.txt"]) == 1
     err = capsys.readouterr().err
@@ -325,12 +330,14 @@ def test_heavy_file_refused_above_explicit_limit(heavy_file, no_prompt, no_deriv
     assert no_derive == []
 
 
+@pytest.mark.requires_argon2
 def test_heavy_file_allowed_with_explicit_limit(heavy_file, no_derive):
     assert cli.main(["decrypt", str(heavy_file), "-o", "out.txt", "--key", "env:FC_PASS",
                      "--max-kdf-memory", "4096"]) == 1   # fails later: fake KEK
     assert no_derive == [ARGON2ID]
 
 
+@pytest.mark.requires_argon2
 def test_heavy_file_interactive_confirm(heavy_file, no_derive, monkeypatch):
     monkeypatch.setattr(cli, "_interactive", lambda: True)
     answers = []

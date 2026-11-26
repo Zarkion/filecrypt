@@ -96,35 +96,9 @@ jobs:
       - name: Check Argon2 backend
         run: python .github/scripts/check_ci_env.py backend ${{ matrix.backend }}
       - name: Test
-        shell: bash
-        run: |
-          deselect=()
-          if [ "${{ matrix.backend }}" = scrypt ]; then
-            # These tests assume Argon2id is installed (they expect it as the
-            # default KDF). Everything else, including full encrypt/decrypt
-            # round trips, runs on the scrypt fallback.
-            for t in \
-              tests/test_cli.py::test_round_trip_env_passphrase \
-              tests/test_cli.py::test_default_argon_settings \
-              tests/test_cli.py::test_short_keyfile_rejected_unless_flag \
-              tests/test_cli.py::test_rekey_argon_settings \
-              tests/test_cli.py::test_heavy_file_refused_when_not_interactive \
-              tests/test_cli.py::test_heavy_file_allowed_with_explicit_limit \
-              tests/test_cli.py::test_heavy_file_interactive_confirm \
-              tests/test_kdf.py::test_argon2_derive_deterministic_and_salted \
-              tests/test_kdf.py::test_select_passphrase_defaults_to_argon2id \
-              tests/test_kdf.py::test_select_custom_argon \
-              tests/test_kdf.py::test_select_rejects_argon_below_floor \
-              tests/test_kdf.py::test_select_short_key_rejected_unless_passphrase_mode \
-              tests/test_kdf.py::test_keyfile_is_passphrase_forces_passphrase_kdf_even_for_long_keys \
-              tests/test_keyring_source.py::test_example_passphrase_in_keyring_goes_through_argon2 \
-              tests/test_engine.py::test_inspect_file \
-              tests/test_engine.py::test_short_key_rejected_unless_passphrase_mode \
-              tests/test_engine.py::test_expensive_refused_without_confirm \
-              tests/test_engine.py::test_expensive_accepted \
-              tests/test_engine.py::test_expensive_within_explicit_limit
-            do deselect+=(--deselect "$t"); done
-          fi
-          python -m pytest -rs --junitxml=junit.xml "${deselect[@]}" tests plugins/filecrypt-azkv/tests
+        # On the scrypt backend, tests marked requires_argon2 skip themselves
+        # (tests/conftest.py). Everything else, including full encrypt/decrypt
+        # round trips, runs on the scrypt fallback.
+        run: python -m pytest -rs --junitxml=junit.xml tests plugins/filecrypt-azkv/tests
       - name: Check platform-only tests ran
         run: python .github/scripts/check_ci_env.py skips junit.xml
