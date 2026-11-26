@@ -77,7 +77,9 @@ explicitly for scripts; files above it are refused without asking.
 
 ## Format
 
-Integers are little-endian unless noted.
+The full byte-level specification, with a worked example and test vectors,
+is in [docs/FORMAT.md](docs/FORMAT.md). In short (integers are little-endian
+unless noted):
 
 ```
 "FCX1" | version u8 (=1) | kdf_id u8 | settings_len u16 | settings

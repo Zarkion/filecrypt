@@ -1,0 +1,2 @@
+# The repository ignores *.fcx, but these test vectors must be committed.
+!*.fcx

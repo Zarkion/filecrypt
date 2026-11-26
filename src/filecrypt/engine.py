@@ -363,16 +363,30 @@ def _unlock(header: container.Header, secret: SecretArg, limit: Optional[int],
         _check_cancel(cancel)
         value = _resolve(secret)
         _check_cancel(cancel)
-        kek = kdf.derive_kek(header.kdf_id, header.settings, header.salt, value.value)
-        _check_cancel(cancel)
         try:
-            return container.unwrap_file_key(header, kek)
+            return _unwrap(header, value)
         except container.WrongKeyError:
             # Asking again only helps if the caller can supply a different secret.
             if not callable(secret) or attempt >= max_attempts:
                 raise
             if on_wrong_key is not None:
                 on_wrong_key(attempt)
+
+
+def _unwrap(header: container.Header, secret: Secret) -> bytes:
+    """Unwrap the file key. A passphrase is tried in NFC form first, then as
+    the exact bytes given, which files made before normalization used."""
+    *earlier, last = secret.unlock_candidates()
+    for candidate in earlier:
+        try:
+            return container.unwrap_file_key(header, _kek(header, candidate))
+        except container.AuthenticationError:
+            pass
+    return container.unwrap_file_key(header, _kek(header, last))
+
+
+def _kek(header: container.Header, secret: bytes) -> bytes:
+    return kdf.derive_kek(header.kdf_id, header.settings, header.salt, secret)
 
 
 class _ProgressReader:

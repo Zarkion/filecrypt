@@ -13,8 +13,9 @@ from __future__ import annotations
 
 import os
 import struct
-from dataclasses import dataclass
-from typing import Callable, Literal, Optional, Tuple
+import unicodedata
+from dataclasses import dataclass, field
+from typing import Callable, List, Literal, Optional, Tuple
 
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF as _HKDF
@@ -66,12 +67,41 @@ class Secret:
 
     ``kind`` is "passphrase" for human-chosen text (prompt, env, stdin) and
     "key" for random key material (keyfiles, key stores).
+
+    A passphrase that is valid UTF-8 is stored in Unicode NFC form, so the
+    same accented passphrase gives the same bytes whether the keyboard or
+    operating system produced composed or decomposed characters. If that
+    changed the bytes, ``unnormalized`` keeps the bytes exactly as given:
+    files made before passphrases were normalized used those, so decryption
+    tries them second (see :meth:`unlock_candidates`). Keys are never
+    normalized, and neither are passphrases that aren't valid UTF-8.
     """
     value: bytes
     kind: Literal["passphrase", "key"]
+    unnormalized: Optional[bytes] = field(default=None, init=False, compare=False)
+
+    def __post_init__(self) -> None:
+        if self.kind == "passphrase":
+            nfc = normalize_passphrase(self.value)
+            if nfc != self.value:
+                object.__setattr__(self, "unnormalized", self.value)
+                object.__setattr__(self, "value", nfc)
+
+    def unlock_candidates(self) -> List[bytes]:
+        """Byte strings to try when opening a file: the NFC form, then the original."""
+        return [self.value] if self.unnormalized is None else [self.value, self.unnormalized]
 
     def __repr__(self) -> str:  # never leak the value into logs/tracebacks
         return f"Secret(kind={self.kind!r}, len={len(self.value)})"
+
+
+def normalize_passphrase(raw: bytes) -> bytes:
+    """Return the NFC UTF-8 form of a passphrase, or ``raw`` unchanged if it isn't UTF-8."""
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        return raw
+    return unicodedata.normalize("NFC", text).encode("utf-8")
 
 
 @dataclass(frozen=True)
