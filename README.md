@@ -10,6 +10,19 @@ pip install ".[keyring]"      # + OS keyring key source
 pip install ".[argon2]"       # + argon2-cffi, only for cryptography < 44
 ```
 
+**32-bit (x86) and ARM64 Windows:** the newest cryptography releases (49 and
+later) publish no prebuilt wheel for these, so a plain install tries to build
+cryptography from source, which needs Rust and OpenSSL and usually fails. Tell
+pip to use a prebuilt cryptography instead; it then picks the newest release
+that has one (48.0.1 on 32-bit, 46.0.3 on ARM64, as of November 2026):
+
+```
+pip install --only-binary=cryptography .
+```
+
+Both versions include the built-in Argon2id, so nothing else is needed. This
+is the same command CI uses on its 32-bit and ARM64 Windows runners.
+
 ## Usage
 
 ```
@@ -21,9 +34,9 @@ filecrypt rekey report.pdf.fcx --key prompt --new-key file:backup.key
 ```
 
 Keyfiles are readable only by you: mode 0600 on Linux and macOS, and on
-Windows a protected ACL granting only your account and SYSTEM (inherited
-folder permissions are removed). If Windows refuses the ACL change, keygen
-warns and the file keeps the folder's permissions.
+Windows a protected ACL granting only your account and SYSTEM, applied as the
+file is created (inherited folder permissions never reach it). If Windows
+refuses the ACL, keygen warns and the file keeps the folder's permissions.
 
 Nothing is overwritten without `--force`. Output is written to a temp file
 (`.<name>.<random>.part` next to the output) and renamed into place, and
@@ -138,10 +151,18 @@ engine.decrypt_file("report.pdf.fcx", "report.pdf", ask_password,
                     confirm_expensive=lambda reason: yes_no_dialog(reason))
 ```
 
-Errors a user should see derive from `engine.EngineError`
+For a background worker thread, pass `cancel=engine.CancelToken()` and call
+`token.cancel()` from the UI: the operation stops before the next KDF run or
+chunk, raises `engine.Cancelled` and leaves no partial output. Pass
+`max_attempts=3` (with a callable secret) to re-ask after a wrong password
+without reopening the file; `on_wrong_key(attempt)` fires before each retry.
+
+A wrong password or key raises `container.WrongKeyError`. A file that unlocks
+but then fails authentication (damaged, truncated or tampered with) raises
+`container.CorruptedFileError`. Both are `container.AuthenticationError`
+subclasses. Other errors a user should see derive from `engine.EngineError`
 (`OutputExistsError`, `SameFileError`, `ExpensiveKDFError`, `Cancelled`,
-`InputError`), alongside `container.FormatError`, `container.AuthenticationError`
-and `kdf.KDFError`.
+`InputError`), alongside `container.FormatError` and `kdf.KDFError`.
 
 ## Writing a key-source plugin
 
@@ -163,6 +184,30 @@ Plugins are ordinary installed code, so install only ones you trust. Run the
 tool with the `filecrypt` command. `python -m filecrypt` also works and drops
 the current folder from the import path first, so a folder of downloads can't
 shadow a dependency or register a plugin.
+
+## Desktop window
+
+`filecrypt-gui` is a small window for people who'd rather not use a terminal.
+It runs on Windows, macOS and Linux (64-bit; PySide6 has no 32-bit Windows
+build).
+
+```
+pip install ".[gui]"
+filecrypt-gui                 # or: filecrypt-gui report.pdf
+```
+
+Drop a file on the window or choose one. Files that are already `.fcx` are
+decrypted, anything else is encrypted next to the original (which is kept).
+Encrypting asks for the password twice, shows how strong it is, and asks you
+to confirm you understand that a lost password means a lost file. A wrong
+password is asked for again; a damaged file gets its own message, so nobody
+retypes a correct password at a broken file. Work runs in the background with
+a progress bar and a Cancel button, and cancelling leaves no partial file.
+Under **Advanced** you can use a keyfile instead of a password and change the
+Argon2id settings.
+
+GUI tests use pytest-qt and run offscreen:
+`pip install -e ".[test-gui]"` then `pytest tests/gui`.
 
 ## Development
 

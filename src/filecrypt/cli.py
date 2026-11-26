@@ -87,6 +87,17 @@ def _kdf_policy(args) -> dict:
         f"filecrypt: {reason}. Files made with the defaults need 64 MiB. Continue? [y/N] ")}
 
 
+PROMPT_ATTEMPTS = 3
+
+
+def _retry_policy(spec: str) -> dict:
+    """Typed passphrases get three tries on a terminal; other key sources one."""
+    if sources.parse_key_spec(spec)[0] == "prompt" and _interactive():
+        return {"max_attempts": PROMPT_ATTEMPTS,
+                "on_wrong_key": lambda attempt: _warn("wrong key or passphrase, try again")}
+    return {"max_attempts": 1, "on_wrong_key": None}
+
+
 # --- commands ----------------------------------------------------------------
 
 def cmd_keygen(args) -> None:
@@ -126,7 +137,8 @@ def cmd_decrypt(args) -> None:
         raise CLIError(f"{args.input} does not end in {engine.FCX_SUFFIX}; "
                        f"choose an output name with -o")
     engine.decrypt_file(args.input, dest, lambda: sources.resolve_secret(args.key),
-                        force=args.force, on_stale_parts=_handle_stale_parts, **_kdf_policy(args))
+                        force=args.force, on_stale_parts=_handle_stale_parts,
+                        **_kdf_policy(args), **_retry_policy(args.key))
 
 
 def cmd_rekey(args) -> None:
@@ -146,7 +158,7 @@ def cmd_rekey(args) -> None:
 
     engine.rekey_file(args.input, old_secret, new_secret, dest=args.output, options=options,
                       force=args.force, notify=_warn, on_stale_parts=_handle_stale_parts,
-                      **_kdf_policy(args))
+                      **_kdf_policy(args), **_retry_policy(args.key))
 
 
 # --- argument parsing --------------------------------------------------------

@@ -28,6 +28,13 @@ the `.fcx` v1 format is frozen.
 - `filecrypt.engine`, a UI-neutral API (encrypt, decrypt, rekey, inspect)
   with atomic output and callbacks for progress, notices and confirmations,
   so a GUI can reuse the tested code. The CLI is built on it.
+- A desktop window, `filecrypt-gui` (the `gui` extra, PySide6): drop or
+  choose one file to encrypt or decrypt, with a password strength meter, a
+  keyfile option, a progress bar and Cancel.
+- The engine tells a wrong key (`WrongKeyError`) from a damaged file
+  (`CorruptedFileError`), can ask for a password again without reopening the
+  file, and can be cancelled from another thread with no partial output.
+  The CLI gives typed passphrases three tries on a terminal.
 - Passphrases are encoded as NFC UTF-8. Decrypt and rekey try the NFC bytes
   first and then the exact bytes, so files made before the change still open.
 - `docs/FORMAT.md`, a byte-level specification of `.fcx` v1, and frozen test
@@ -36,13 +43,17 @@ the `.fcx` v1 format is frozen.
 - `SECURITY.md`, a threat model and a compatibility promise that every v1
   `.fcx` file stays decryptable.
 - Cross-platform CI on Linux, Windows and macOS (x86_64, arm64 and 32-bit
-  Windows) for Python 3.9 to 3.14 and every Argon2 backend.
+  Windows) for Python 3.9 to 3.14 and every Argon2 backend, plus the
+  desktop window's tests.
+- README notes for installing on 32-bit and ARM64 Windows, where
+  cryptography has no recent wheels.
 - Release tooling: a single-source version and a tag-triggered workflow that
   builds the sdist and wheel. Publishing to PyPI is off until enabled.
 
 ### Security
 
-- Keyfiles get an owner-only ACL on Windows before any key bytes are written.
+- Keyfiles on Windows are created with an owner-only ACL already applied, so
+  no other local account can open the file before it is locked down.
 - `decrypt` and `rekey` check a file's KDF cost before asking for the key, cap
   total KDF work at 16 GiB and ask before costly settings
   (`--max-kdf-memory` for scripts).

@@ -16,10 +16,16 @@ dependencies = ["cryptography>=41"]
 # Only needed when the installed cryptography has no native Argon2id (< 44 or old OpenSSL).
 argon2 = ["argon2-cffi>=21.1"]
 keyring = ["keyring>=24"]
+# The desktop window (filecrypt-gui). PySide6-Essentials is the Qt core without add-ons.
+gui = ["PySide6-Essentials>=6.5"]
 test = ["pytest>=7"]
+test-gui = ["pytest>=7", "pytest-qt>=4.2", "PySide6-Essentials>=6.5"]
 
 [project.scripts]
 filecrypt = "filecrypt.cli:main"
+
+[project.gui-scripts]
+filecrypt-gui = "filecrypt.gui:main"
 
 [tool.setuptools.dynamic]
 version = { attr = "filecrypt.__version__" }
