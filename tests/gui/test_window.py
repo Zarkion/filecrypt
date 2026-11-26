@@ -355,7 +355,7 @@ def test_window_refuses_a_disguised_encrypt_name(win, qtbot, tmp_path):
     assert sorted(p.name for p in tmp_path.iterdir()) == [src.name]
 
 
-@pytest.mark.parametrize("name", ["CON", "nul.txt", "a:stream", "trailing."])
+@pytest.mark.parametrize("name", ["CON", "nul.txt", "notes.txt:hidden", "trailing."])
 def test_worker_refuses_windows_unsafe_names(qtbot, tmp_path, monkeypatch, name):
     monkeypatch.setattr(engine, "_WINDOWS_NAMES", True)
     fcx = encrypted(tmp_path)
