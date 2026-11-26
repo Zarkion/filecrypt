@@ -83,10 +83,15 @@ def _interactive() -> bool:
 
 
 def _confirm(prompt: str) -> bool:
+    """Ask a yes/no question. Closed or unreadable input counts as "no", never a traceback."""
     print(prompt, end="", file=sys.stderr, flush=True)
     try:
         return input().strip().lower() in ("y", "yes")
-    except EOFError:
+    except (EOFError, OSError, ValueError, RuntimeError):
+        # EOF on a closed pipe, a detached console on Windows, closed stdin,
+        # or no stdin at all (pythonw): answer "no" and say so.
+        print(file=sys.stderr)
+        _warn("no answer could be read, so taking it as no")
         return False
 
 
@@ -471,6 +476,8 @@ def _message(exc: BaseException) -> str:
         return "interrupted"
     if isinstance(exc, engine.ExpensiveKDFError):
         return f"error: {exc}; if you trust this file, rerun with --max-kdf-memory MIB"
+    if isinstance(exc, engine.Cancelled):   # "no" to the KDF cost question
+        return "error: cancelled; to answer it ahead of time, rerun with --max-kdf-memory MIB"
     if isinstance(exc, engine.OutputExistsError):
         return f"error: {exc} (use --force to overwrite)"
     if isinstance(exc, (CLIError, engine.EngineError, FormatError, AuthenticationError,

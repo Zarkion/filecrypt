@@ -509,3 +509,36 @@ def test_failed_decrypt_does_not_touch_mark(work, keyfile, motw_calls):
 def test_cli_uses_the_shared_motw_helper():
     from filecrypt import _motw
     assert cli._motw is _motw
+
+
+# --- yes/no questions fail cleanly with no terminal -----------------------------
+
+class _BrokenStdin:
+    def readline(self, *a):
+        raise OSError("console detached")
+
+    def isatty(self):
+        return False
+
+
+@pytest.mark.parametrize("stdin", [io.StringIO(""), _BrokenStdin(), None])
+def test_confirm_without_input_is_no(stdin, monkeypatch, capsys):
+    monkeypatch.setattr(sys, "stdin", stdin)
+    assert cli._confirm("filecrypt: continue? [y/N] ") is False
+    assert "taking it as no" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("stdin", [io.StringIO("y\n"), None])
+def test_piped_or_missing_stdin_is_not_interactive(stdin, monkeypatch):
+    monkeypatch.setattr(sys, "stdin", stdin)
+    assert cli._interactive() is False
+
+
+@pytest.mark.requires_argon2
+def test_heavy_file_no_answer_names_the_flag(heavy_file, no_derive, monkeypatch, capsys):
+    monkeypatch.setattr(cli, "_interactive", lambda: True)
+    monkeypatch.setattr(sys, "stdin", io.StringIO(""))
+    assert cli.main(["decrypt", str(heavy_file), "-o", "out.txt", "--key", "env:FC_PASS"]) == 6
+    err = capsys.readouterr().err
+    assert "--max-kdf-memory" in err and "Traceback" not in err
+    assert no_derive == []
