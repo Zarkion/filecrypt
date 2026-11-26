@@ -15,9 +15,15 @@ class NotFound(Exception):
     pass
 
 
+class FakeProps:
+    def __init__(self, version):
+        self.version = version
+
+
 class FakeSecret:
-    def __init__(self, value):
+    def __init__(self, value, version=None):
         self.value = value
+        self.properties = FakeProps(version)
 
 
 class FakeClient:
@@ -32,7 +38,16 @@ class FakeClient:
             raise NotFound(name) from None
 
     def set_secret(self, name, value):
+        version = os.urandom(16).hex()
         self.data[(name, "latest")] = value
+        self.data[(name, version)] = value
+        return FakeSecret(value, version)
+
+    def list_properties_of_secret_versions(self, name):
+        return [FakeProps(v) for (n, v) in self.data if n == name and v != "latest"]
+
+
+V = "0123456789abcdef0123456789abcdef"  # Key Vault versions are 32 hex characters
 
 
 @pytest.fixture
@@ -45,9 +60,10 @@ def vaults(monkeypatch):
 
 @pytest.mark.parametrize("loc,expected", [
     ("myvault/mykey", ("https://myvault.vault.azure.net", "mykey", None)),
-    ("myvault/mykey/abc123", ("https://myvault.vault.azure.net", "mykey", "abc123")),
+    ("myvault/mykey/" + V, ("https://myvault.vault.azure.net", "mykey", V)),
+    ("myvault/mykey/" + V.upper(), ("https://myvault.vault.azure.net", "mykey", V.upper())),
     ("https://v2.vault.azure.net/secrets/k", ("https://v2.vault.azure.net", "k", None)),
-    ("https://v2.vault.azure.net/secrets/k/ver", ("https://v2.vault.azure.net", "k", "ver")),
+    ("https://v2.vault.azure.net/secrets/k/" + V, ("https://v2.vault.azure.net", "k", V)),
     ("https://v.vault.usgovcloudapi.net/secrets/k", ("https://v.vault.usgovcloudapi.net", "k", None)),
 ])
 def test_parse_location(loc, expected):
@@ -59,6 +75,36 @@ def test_parse_location(loc, expected):
 def test_parse_location_rejects(loc):
     with pytest.raises(KeySourceError):
         parse_location(loc)
+
+
+@pytest.mark.parametrize("loc", ["myv/k/abc123", "myv/k/" + V[:-1], "myv/k/" + V + "0",
+                                 "myv/k/" + "g" * 32, "myv/k/" + V[:-2] + "..", "https://v.vault.azure.net/secrets/k/ver",
+                                 "https://v.vault.azure.net/secrets/k/" + V + "%2F"])
+def test_parse_location_rejects_bad_version(loc):
+    with pytest.raises(KeySourceError, match="version"):
+        parse_location(loc)
+
+
+def test_get_specific_version(vaults):
+    vaults["https://myv.vault.azure.net"] = {("pw", V): "older passphrase", ("pw", "latest"): "newer"}
+    assert AzureKeyVaultSource().get("myv/pw/" + V) == Secret(b"older passphrase", "passphrase")
+
+
+def test_store_detects_concurrent_writer(vaults, monkeypatch):
+    # Simulate another keygen whose set_secret lands between our existence
+    # check and our own set_secret.
+    real_set = FakeClient.set_secret
+    raced = []
+
+    def racing_set(self, name, value):
+        if not raced:
+            raced.append(real_set(self, name, "fcxkey:v1:someone-else"))
+        return real_set(self, name, value)
+
+    monkeypatch.setattr(FakeClient, "set_secret", racing_set)
+    with pytest.raises(KeySourceError, match="same time") as exc:
+        AzureKeyVaultSource().store("myv/k", b"a" * 32)
+    assert raced[0].properties.version in str(exc.value)
 
 
 def test_store_and_get(vaults):

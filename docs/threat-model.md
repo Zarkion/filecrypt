@@ -27,7 +27,8 @@ you make it.
     through **HKDF-SHA256**.
 * Every wrap uses a fresh random 16-byte salt, so every KEK is used once.
 * There is exactly one wrapped key per file. `rekey` replaces that one key
-  block and leaves the encrypted body byte-identical.
+  block and leaves the encrypted body byte-identical; `rekey
+  --rotate-file-key` replaces the file key too and re-encrypts the body.
 
 The full layout is in the [format spec](FORMAT.md).
 
@@ -94,17 +95,46 @@ The full layout is in the [format spec](FORMAT.md).
 * **Plaintext after you decrypt it.** Once a file is decrypted, protecting it
   is up to you and your operating system.
 
-### Rekey is not key rotation
+### Rekey is not key rotation (unless you ask for it)
 
-`rekey` re-wraps the same file key under a new secret and copies the body
-unchanged. It is fast, but it does **not** help after a secret has leaked:
-anyone who had the old key or passphrase and an old copy of the file (or the
-old header) can recover the file key, and that key still decrypts the new
-copy. If a secret may have leaked, decrypt the file and encrypt it again,
-which creates a new file key.
+Plain `rekey` re-wraps the same file key under a new secret and copies the
+body unchanged. It is fast, but it does **not** help after a secret has
+leaked: anyone who had the old key or passphrase and an old copy of the file
+(or the old header) can recover the file key, and that key still decrypts the
+new copy.
 
-`rekey` also copies the body without checking it, so corruption in the body
-is only found the next time you decrypt.
+If a secret may have leaked, use `rekey --rotate-file-key`. It generates a new
+random file key and nonce prefix, authenticates every chunk of the old body
+with the old file key and re-encrypts it under the new one. The output is
+written to a temporary file and only replaces the original once every chunk
+has been checked, so a damaged or tampered body stops the run and leaves the
+original untouched. Afterwards the old secret and old headers are useless for
+the new file. Rotation can't reach copies made before it: backups, synced
+copies and old versions of the file still open with the old secret, so delete
+or rotate those too. Decrypting and encrypting again gives the same result,
+but writes the plaintext to disk in between.
+
+Plain `rekey` also copies the body without checking it, so corruption in the
+body is only found the next time you decrypt (`verify` checks it without
+writing anything). `--rotate-file-key` checks every chunk as it goes.
+
+### Hostile output names
+
+The default output name comes from the input's name (`invoice.pdf.fcx`
+decrypts to `invoice.pdf`), and the input may come from someone else. Before
+writing, the CLI refuses an output name, default or `-o`, that:
+
+* contains a control character, or a Unicode bidirectional control such as
+  RIGHT-TO-LEFT OVERRIDE (U+202E), which can make `invoice\u202efdp.exe`
+  display as `invoiceexe.pdf`;
+* on Windows, contains a colon (which would write an NTFS alternate data
+  stream instead of a file) or another character Windows forbids, ends with a
+  dot or space (which Windows strips silently), or is a reserved device name
+  such as `CON`, `NUL`, `COM1` or `nul.txt`.
+
+Only the file name is checked, not the folders above it. The error asks for
+a different name with `-o` (exit code 2). The check is
+`filecrypt.engine.check_output_name`, for other front-ends to call too.
 
 ### Local attackers
 
@@ -115,9 +145,11 @@ Other user accounts on the same computer are partly in scope:
   file is created. If Windows can't create it that way, keygen restricts the
   new file before writing the key, and if that fails too it warns and the
   file keeps the folder's permissions.
-* Decryption temp files (`.<name>.<random>.part`) are owner-only on Linux and
-  macOS. On Windows they are opened delete-on-close but are not yet reliably
-  owner-only (see Known limitations).
+* Output temp files (`.<name>.<random>.part`), which hold plaintext while
+  decrypting, are owner-only: mode 0600 on Linux and macOS, and on Windows
+  the same protected ACL as keyfiles, applied as the file is created. On
+  Windows they are also opened delete-on-close. The finished output keeps
+  these permissions when it is renamed into place.
 * `env:` passphrases can be read by other processes running as the same
   user (and by administrators). Prefer `prompt`, a keyfile or a key store.
 * An administrator or root user can read anything; filecrypt cannot defend
@@ -177,23 +209,20 @@ An internal security review of v1 found no critical or high-severity issues.
 The medium and most low findings (M1-M3, L1-L4) are fixed on `main`. These are
 still open:
 
-* **Decryption temp files on Windows are not yet owner-only.** The usual
-  delete-on-close `.part` file keeps the folder's inherited ACL, and the
-  fallback `.part` file gets the owner-only ACL only just after it is
-  created, so a local user who can read the folder could open it and read
-  the plaintext as it is written (Windows checks access only when a file is
-  opened). Keyfiles no longer have this problem: `keygen` creates them with
-  the ACL already applied. Until `.part` files do the same, decrypt into a
-  folder only you can read, such as your user profile.
-* **Azure Key Vault version is not validated** (`azkv:VAULT/SECRET/VERSION`).
-  Only an empty version is rejected; it should be checked against Key Vault's
-  32-hex-character format before reaching the SDK.
-* **"Refuse to replace" in key stores is check-then-set.** Two
-  `keygen --store` runs at the same moment could both succeed. In Key Vault
-  the older value survives as a previous version; in the OS keyring it is
-  lost.
-* **Azure identity is implicit.** `DefaultAzureCredential` uses the first
-  identity that works, and there is no option to restrict it.
+* **"Refuse to replace" in the OS keyring is check-then-set.** OS keyrings
+  have no create-only write. `keygen --store keyring:...` reads the entry back
+  after writing it and reports an error if another program changed it in
+  between, but a second writer that lands after that read can still replace
+  the key without either run noticing. The race window is small and needs two
+  `keygen --store` runs for the same entry at the same moment. In Azure Key
+  Vault the same race is detected: every write is kept as a version, and
+  `keygen --store` lists the versions after writing and reports an error if
+  another one appeared.
+* **Azure identity is chosen by azure-identity.** `DefaultAzureCredential`
+  uses the first identity that works. filecrypt has no option of its own to
+  restrict it, but the `AZURE_TOKEN_CREDENTIALS` environment variable does
+  (for example `ManagedIdentityCredential`, or `prod`); see the
+  [plugin README](../plugins/filecrypt-azkv/README.md#choosing-which-azure-identity-is-used).
 * **Secrets are not wiped from memory** (see above). Python can't fully fix
   this; filecrypt does not claim to zero secrets.
 * **Old files with decomposed accented passphrases.** Passphrases are now

@@ -274,6 +274,145 @@ def test_rekey_wrong_old_key_untouched(work):
     assert (work / "r.fcx").read_bytes() == before
 
 
+def test_rotate_file_key_in_place(work):
+    engine.encrypt_file(work / "doc.bin", work / "r.fcx", PW, options=FAST)
+    old = (work / "r.fcx").read_bytes()
+    old_h = container.read_header(open(work / "r.fcx", "rb"))
+    rec = Recorder()
+    out = engine.rekey_file(work / "r.fcx", PW, KEY, progress=rec, rotate_file_key=True)
+    assert out == work / "r.fcx"
+    new = out.read_bytes()
+    with open(out, "rb") as f:
+        new_h = container.read_header(f)
+    assert new_h.kdf_id == HKDF
+    assert new_h.nonce_prefix != old_h.nonce_prefix
+    assert new[new_h.header_len:] != old[old_h.header_len:]
+    check_progress(rec, len(old) - old_h.header_len)
+    assert engine.decrypt_file(out, work / "b.bin", KEY).read_bytes() == DATA
+    with pytest.raises(AuthenticationError):
+        engine.decrypt_file(out, work / "c.bin", PW)
+    assert names(work) == ["b.bin", "doc.bin", "r.fcx"]
+
+
+def test_rotate_file_key_defeats_old_header(work):
+    # The leak scenario: an attacker has the old passphrase and the old header.
+    engine.encrypt_file(work / "doc.bin", work / "r.fcx", PW, options=FAST)
+    old = (work / "r.fcx").read_bytes()
+    old_h = container.read_header(open(work / "r.fcx", "rb"))
+    old_key = engine._unwrap(old_h, PW)
+    engine.rekey_file(work / "r.fcx", PW, KEY, rotate_file_key=True)
+    new = (work / "r.fcx").read_bytes()
+    with open(work / "r.fcx", "rb") as f:
+        new_h = container.read_header(f)
+    import io
+    src = io.BytesIO(new)
+    src.seek(new_h.header_len)
+    with pytest.raises(container.CorruptedFileError):
+        container.decrypt_body(new_h, old_key, src, io.BytesIO())
+    # and splicing the old header onto the new body fails too
+    spliced = old[:old_h.header_len] + new[new_h.header_len:]
+    (work / "s.fcx").write_bytes(spliced)
+    with pytest.raises(container.CorruptedFileError):
+        engine.decrypt_file(work / "s.fcx", work / "s.bin", PW)
+    assert not (work / "s.bin").exists()
+
+
+def test_rotate_file_key_tampered_body_writes_nothing(work):
+    engine.encrypt_file(work / "doc.bin", work / "r.fcx", KEY)
+    blob = bytearray((work / "r.fcx").read_bytes())
+    blob[len(blob) // 2] ^= 1
+    (work / "r.fcx").write_bytes(bytes(blob))
+    with pytest.raises(container.CorruptedFileError):
+        engine.rekey_file(work / "r.fcx", KEY, PW, options=FAST, rotate_file_key=True)
+    assert (work / "r.fcx").read_bytes() == bytes(blob)       # original untouched
+    with pytest.raises(container.CorruptedFileError):
+        engine.rekey_file(work / "r.fcx", KEY, PW, dest=work / "new.fcx", options=FAST,
+                          rotate_file_key=True)
+    assert names(work) == ["doc.bin", "r.fcx"]                # no output, no .part
+
+
+def test_rotate_file_key_to_other_file(work):
+    engine.encrypt_file(work / "doc.bin", work / "r.fcx", KEY)
+    before = (work / "r.fcx").read_bytes()
+    engine.rekey_file(work / "r.fcx", KEY, KEY, dest=work / "new.fcx", rotate_file_key=True)
+    assert (work / "r.fcx").read_bytes() == before
+    assert engine.decrypt_file(work / "new.fcx", work / "b.bin", KEY).read_bytes() == DATA
+
+
+def test_rotate_file_key_cancel_leaves_original(work):
+    engine.encrypt_file(work / "doc.bin", work / "r.fcx", KEY)
+    before = (work / "r.fcx").read_bytes()
+    token = engine.CancelToken()
+
+    def progress(done, total):
+        if done > total // 2:
+            token.cancel()
+    with pytest.raises(Cancelled):
+        engine.rekey_file(work / "r.fcx", KEY, PW, options=FAST, progress=progress,
+                          cancel=token, rotate_file_key=True)
+    assert (work / "r.fcx").read_bytes() == before
+    assert names(work) == ["doc.bin", "r.fcx"]
+
+
+# --- output name safety ------------------------------------------------------------
+
+@pytest.mark.parametrize("name", [
+    "invoice\u202efdp.exe",          # RTLO: shows as invoiceexe.pdf
+    "a\u202db.txt", "a\u2066b.txt", "a\u2069b", "a\u200fb", "a\u061cb",
+    "tab\there", "new\nline", "nul\x00byte", "esc\x1b[31m", "del\x7f", "c1\x85",
+])
+def test_unsafe_names_everywhere(name):
+    for windows in (False, True):
+        with pytest.raises(engine.UnsafeOutputNameError, match="choose another name with -o"):
+            engine.check_output_name(name, windows=windows)
+
+
+@pytest.mark.parametrize("name", [
+    "report.pdf:hidden", "report.pdf:Zone.Identifier", "a<b", "a>b", 'a"b', "a|b", "a?b", "a*b",
+    "report.", "report ", "report.pdf...", "report.pdf. ",
+    "CON", "con", "nul.txt", "NUL.tar.gz", "Aux", "PRN.pdf", "COM1", "com9.log", "LPT1",
+    "COM0", "lpt\u00b9", "CONIN$", "conout$.txt", "nul .txt",
+])
+def test_unsafe_names_on_windows(name):
+    with pytest.raises(engine.UnsafeOutputNameError):
+        engine.check_output_name(name, windows=True)
+    engine.check_output_name(name, windows=False)   # fine on Linux and macOS
+
+
+@pytest.mark.parametrize("name", [
+    "report.pdf", "r\u00e9sum\u00e9.docx", "\u05e9\u05dc\u05d5\u05dd.txt", "\u0645\u0644\u0641.pdf",
+    "CONSOLE.txt", "nuller", "COM10", "LPT", "my con.txt", ".hidden", "a.b.c",
+    "emoji \U0001f600.png", "zwj\u200d.txt",
+])
+def test_safe_names(name):
+    for windows in (False, True):
+        engine.check_output_name(name, windows=windows)
+
+
+def test_only_the_last_component_is_checked():
+    engine.check_output_name(os.path.join("CON.d", "report.pdf"), windows=True)
+    engine.check_output_name("C:\\Users\\x\\report.pdf", windows=True)
+    with pytest.raises(engine.UnsafeOutputNameError):
+        engine.check_output_name("C:\\Users\\x\\nul.txt", windows=True)
+    with pytest.raises(engine.UnsafeOutputNameError):
+        engine.check_output_name(os.path.join("dir", "a\u202eb"), windows=False)
+
+
+def test_check_output_name_accepts_path_objects():
+    from pathlib import Path
+    with pytest.raises(engine.UnsafeOutputNameError) as e:
+        engine.check_output_name(Path("x") / "evil\u202etxt.exe", windows=False)
+    assert "U+202E" in str(e.value)
+
+
+def test_check_output_name_default_platform(monkeypatch):
+    monkeypatch.setattr(engine, "_WINDOWS_NAMES", True)
+    with pytest.raises(engine.UnsafeOutputNameError):
+        engine.check_output_name("CON")
+    monkeypatch.setattr(engine, "_WINDOWS_NAMES", False)
+    engine.check_output_name("CON")
+
+
 # --- stale partial files ----------------------------------------------------------
 
 def test_stale_parts(work):

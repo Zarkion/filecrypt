@@ -1,6 +1,7 @@
 """Toggle Windows delete-on-close on an open file.
 
-A temp file opened with ``os.O_TEMPORARY`` is deleted by Windows when its
+A temp file opened delete-on-close (``_winacl.create_owner_only`` with
+``delete_on_close=True``, like ``os.O_TEMPORARY``) is deleted by Windows when its
 last handle closes, even if the process is killed or the console window is
 closed. Clearing the flag just before commit lets us keep and rename it.
 This needs FileDispositionInfoEx (Windows 10 1709 or later); callers fall

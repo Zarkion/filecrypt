@@ -6,7 +6,8 @@
 Authentication uses azure-identity's DefaultAzureCredential, so ``az login``,
 environment variables, managed identity and the other standard methods work.
 ``filecrypt keygen --store azkv:VAULT/SECRET`` creates a new random key in the
-vault (it refuses to replace an existing secret). Keys are stored as
+vault (it refuses to replace an existing secret, and reports an error if
+another writer created the same secret at the same moment). Keys are stored as
 ``fcxkey:v1:<base64>``; a secret without that tag is used as a passphrase.
 
 The plugin is registered with one entry point in its pyproject.toml:
@@ -36,6 +37,8 @@ _VAULT_SUFFIXES = (
 )
 _VAULT_NAME = re.compile(r"^[A-Za-z0-9-]{3,24}$")
 _SECRET_NAME = re.compile(r"^[A-Za-z0-9-]{1,127}$")
+# Key Vault object versions are 32 hexadecimal characters.
+_VERSION = re.compile(r"^[0-9A-Fa-f]{32}$")
 
 
 def parse_location(location: str) -> Tuple[str, str, Optional[str]]:
@@ -56,8 +59,11 @@ def parse_location(location: str) -> Tuple[str, str, Optional[str]]:
             raise KeySourceError("azkv location must be VAULT/SECRET[/VERSION], e.g. azkv:myvault/filecrypt-key")
         vault_url = f"https://{parts[0].lower()}.vault.azure.net"
         name, version = parts[1], (parts[2] if len(parts) == 3 else None)
-    if not _SECRET_NAME.match(name) or (version is not None and not version):
+    if not _SECRET_NAME.match(name):
         raise KeySourceError(f"invalid Key Vault secret name in {location!r}")
+    if version is not None and not _VERSION.match(version):
+        raise KeySourceError(f"invalid Key Vault secret version in {location!r}: "
+                             "expected 32 hexadecimal characters")
     return vault_url, name, version
 
 
@@ -109,6 +115,16 @@ class AzureKeyVaultSource(KeySource):
         else:
             raise KeySourceError(f"secret {name} already exists in {vault_url}")
         try:
-            client.set_secret(name, encode_stored_key(key))
+            ours = client.set_secret(name, encode_stored_key(key)).properties.version
+            versions = {p.version for p in client.list_properties_of_secret_versions(name)}
         except Exception as e:
             raise KeySourceError(f"Azure Key Vault error: {e}") from None
+        # The existence check above and set_secret are two separate requests, so
+        # another writer can slip in between. Key Vault keeps every value as a
+        # version, so any version other than ours means that happened.
+        others = sorted(versions - {ours})
+        if others or ours not in versions:
+            raise KeySourceError(
+                f"secret {name} in {vault_url} was written by someone else at the same "
+                f"time (versions: {', '.join(others) or 'unknown'}; ours: {ours}). "
+                "Check which version is current before encrypting with it.")

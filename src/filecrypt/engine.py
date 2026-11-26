@@ -1,4 +1,4 @@
-"""The filecrypt engine: encrypt, decrypt, rekey and inspect .fcx files.
+"""The filecrypt engine: encrypt, decrypt, rekey, verify and inspect .fcx files.
 
 This is the layer every front-end shares (the CLI today, a GUI later). It
 never prints, prompts or reads the keyboard; everything a user might need
@@ -38,6 +38,7 @@ import os
 import secrets
 import tempfile
 import threading
+import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
 from typing import BinaryIO, Callable, List, Optional, Tuple, Union
@@ -80,6 +81,16 @@ class OutputExistsError(EngineError, FileExistsError):
 class SameFileError(EngineError):
     def __str__(self) -> str:
         return "output would overwrite the input file"
+
+
+class UnsafeOutputNameError(EngineError):
+    """The output file name could mislead the user or misbehave on Windows."""
+
+    def __init__(self, path: PathLike, reason: str):
+        super().__init__(f"unsafe output name {os.fspath(path)!r}: {reason}; "
+                         f"choose another name with -o")
+        self.path = Path(path)
+        self.reason = reason
 
 
 class ExpensiveKDFError(EngineError):
@@ -140,6 +151,13 @@ class EncryptOptions:
 
 @dataclass(frozen=True)
 class FileInfo:
+    """What an .fcx header says, read without a key.
+
+    Nothing here is authenticated. The header is only checked when the file
+    key is unwrapped, and the body only when it is decrypted or verified, so
+    ``chunk_count`` and ``plaintext_size`` are what the file's length implies
+    if nobody truncated or extended it. Use :func:`verify_file` to know.
+    """
     version: int
     kdf_id: int
     kdf_name: str
@@ -148,16 +166,51 @@ class FileInfo:
     kdf_passes: int
     chunk_size: int
     header_len: int
+    file_size: Optional[int] = None       # bytes on disk, header included
+    chunk_count: Optional[int] = None     # unauthenticated; None if the length can't be valid
+    plaintext_size: Optional[int] = None  # unauthenticated; None if the length can't be valid
+
+
+@dataclass(frozen=True)
+class VerifyResult:
+    """What :func:`verify_file` authenticated: every chunk, in order, up to the final one."""
+    chunk_count: int
+    plaintext_size: int
+
+
+def body_layout(body_len: int, chunk_size: int) -> Optional[Tuple[int, int]]:
+    """``(chunks, plaintext bytes)`` a body of ``body_len`` bytes holds, or None
+    if no valid file has that length (for example a cut-off tag)."""
+    full = chunk_size + container.TAG_LEN
+    whole, rest = divmod(body_len, full)
+    if rest == 0:
+        if whole == 0:
+            return None          # even an empty file has one 16-byte final chunk
+        chunks, size = whole, whole * chunk_size
+    elif rest >= container.TAG_LEN:
+        chunks, size = whole + 1, whole * chunk_size + rest - container.TAG_LEN
+    else:
+        return None
+    if chunks > container.MAX_CHUNKS:
+        return None
+    return chunks, size
 
 
 def inspect_file(path: PathLike) -> FileInfo:
-    """Read an .fcx header without needing a key. Raises FormatError for other files."""
+    """Read an .fcx header without needing a key. Raises FormatError for other files.
+
+    The sizes it reports are unauthenticated (see :class:`FileInfo`).
+    """
     with _open_input(path) as f:
         h = container.read_header(f)
+        file_size = os.fstat(f.fileno()).st_size
     memory, passes = kdf.kdf_cost(h.kdf_id, h.settings)
+    layout = body_layout(file_size - h.header_len, h.chunk_size)
+    chunks, size = layout if layout is not None else (None, None)
     return FileInfo(h.version, h.kdf_id, kdf.KDF_NAMES.get(h.kdf_id, f"unknown ({h.kdf_id})"),
                     "key" if h.kdf_id == kdf.HKDF else "passphrase",
-                    memory, passes, h.chunk_size, h.header_len)
+                    memory, passes, h.chunk_size, h.header_len,
+                    file_size=file_size, chunk_count=chunks, plaintext_size=size)
 
 
 def default_encrypt_output(path: PathLike) -> Path:
@@ -170,6 +223,55 @@ def default_decrypt_output(path: PathLike) -> Optional[Path]:
     if s.lower().endswith(FCX_SUFFIX) and len(Path(s).name) > len(FCX_SUFFIX):
         return Path(s[:-len(FCX_SUFFIX)])
     return None
+
+
+# Bidirectional formatting characters: embeddings, overrides (such as RTLO,
+# U+202E), isolates and the invisible direction marks. They make
+# "invoice\u202efdp.exe" display as "invoiceexe.pdf".
+_BIDI_CONTROLS = frozenset("\u061c\u200e\u200f\u202a\u202b\u202c\u202d\u202e"
+                           "\u2066\u2067\u2068\u2069")
+_WINDOWS_RESERVED = frozenset(
+    ["CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$"]
+    + [f"{p}{n}" for p in ("COM", "LPT") for n in "0123456789\u00b9\u00b2\u00b3"])
+_WINDOWS_BAD_CHARS = frozenset('<>:"|?*')
+_WINDOWS_NAMES = os.name == "nt"   # apply Windows naming rules by default
+
+
+def check_output_name(path: PathLike, *, windows: Optional[bool] = None) -> None:
+    """Raise :class:`UnsafeOutputNameError` if the output's file name is unsafe.
+
+    Only the last component is checked, since that is the part a default
+    output name takes from a possibly hostile input name. Everywhere, control
+    characters and Unicode bidi controls (which can disguise ``.exe`` as
+    ``.pdf``) are refused. With Windows rules (the default on Windows), NTFS
+    alternate data stream colons and the other characters Windows forbids,
+    trailing dots and spaces (which Windows silently strips), and reserved
+    device names such as ``CON``, ``NUL``, ``COM1`` or ``nul.txt`` are refused too.
+    """
+    if windows is None:
+        windows = _WINDOWS_NAMES
+    name = os.path.basename(os.fspath(path).rstrip("/\\" if windows else "/"))
+    if windows:
+        name = name.rsplit("\\", 1)[-1]
+    for ch in name:
+        if ch in _BIDI_CONTROLS:
+            raise UnsafeOutputNameError(
+                path, f"it contains the bidirectional control character U+{ord(ch):04X}, "
+                      f"which can disguise the real file type")
+        if unicodedata.category(ch) == "Cc":
+            raise UnsafeOutputNameError(path, f"it contains the control character U+{ord(ch):04X}")
+    if not windows:
+        return
+    for ch in name:
+        if ch in _WINDOWS_BAD_CHARS:
+            what = ("an NTFS alternate data stream separator ':'" if ch == ":"
+                    else f"the character {ch!r}, which Windows doesn't allow")
+            raise UnsafeOutputNameError(path, f"it contains {what}")
+    if name.endswith((".", " ")) and name not in (".", ".."):
+        raise UnsafeOutputNameError(path, "it ends with a dot or space, which Windows strips")
+    base = name.split(".", 1)[0].rstrip(" ").upper()
+    if base in _WINDOWS_RESERVED:
+        raise UnsafeOutputNameError(path, f"{base} is a reserved Windows device name")
 
 
 def stale_parts(dest: PathLike) -> List[Path]:
@@ -244,12 +346,21 @@ def rekey_file(src: PathLike, old_secret: SecretArg, new_secret: SecretArg, *,
                confirm_expensive: Optional[ConfirmExpensive] = None,
                on_stale_parts: Optional[StaleHandler] = None,
                cancel: Optional[CancelToken] = None, max_attempts: int = 1,
-               on_wrong_key: Optional[WrongKeyHandler] = None) -> Path:
-    """Wrap the file key under a new key without re-encrypting the body.
+               on_wrong_key: Optional[WrongKeyHandler] = None,
+               rotate_file_key: bool = False) -> Path:
+    """Change the secret that opens ``src``.
+
+    By default the file key is wrapped under the new secret and the body is
+    copied unchanged, which is fast but doesn't help once the old secret has
+    leaked: the old secret and an old copy of the header still give the file
+    key. With ``rotate_file_key`` a new random file key and nonce prefix are
+    generated and every chunk is authenticated and re-encrypted, so the old
+    secret and old headers become useless for the new file. If any chunk fails
+    authentication, :class:`~filecrypt.container.CorruptedFileError` is raised
+    and nothing is written.
 
     Replaces ``src`` in place unless ``dest`` is given. ``new_secret`` is only
-    requested after ``old_secret`` has unlocked the file. Note that rekeying
-    doesn't help once the old key has leaked: decrypt and re-encrypt instead.
+    requested after ``old_secret`` has unlocked the file.
     """
     options = options or EncryptOptions()
     options.validate()
@@ -271,22 +382,52 @@ def rekey_file(src: PathLike, old_secret: SecretArg, new_secret: SecretArg, *,
         file_key = _unlock(header, old_secret, kdf_memory_limit, confirm_expensive,
                            cancel, max_attempts, on_wrong_key)
         derive, kdf_id, settings = _new_key_block(_resolve(new_secret), options, notify, cancel)
-        new_header = container.rewrap_header(header, file_key, derive_kek=derive,
-                                             kdf_id=kdf_id, settings=settings)
         total = os.fstat(f.fileno()).st_size - header.header_len
         reader = _ProgressReader(f, total, progress, cancel)
         with AtomicOutput(dest, force=in_place or force) as out:
-            out.file.write(new_header)
-            while True:
-                block = reader.read(container.DEFAULT_CHUNK_SIZE)  # fine-grained progress and cancel
-                if not block:
-                    break
-                out.file.write(block)
+            if rotate_file_key:
+                container.reencrypt_body(header, file_key, reader, out.file, derive_kek=derive,
+                                         kdf_id=kdf_id, settings=settings)
+            else:
+                out.file.write(container.rewrap_header(header, file_key, derive_kek=derive,
+                                                       kdf_id=kdf_id, settings=settings))
+                while True:
+                    block = reader.read(container.DEFAULT_CHUNK_SIZE)  # fine-grained progress and cancel
+                    if not block:
+                        break
+                    out.file.write(block)
             reader.finish()
             f.close()  # Windows cannot replace a file that is still open
             _check_cancel(cancel)
             out.commit()
     return dest
+
+
+def verify_file(src: PathLike, secret: SecretArg, *, progress: Optional[Progress] = None,
+                kdf_memory_limit: Optional[int] = None,
+                confirm_expensive: Optional[ConfirmExpensive] = None,
+                cancel: Optional[CancelToken] = None, max_attempts: int = 1,
+                on_wrong_key: Optional[WrongKeyHandler] = None) -> VerifyResult:
+    """Check that ``src`` decrypts and is intact, without writing anything.
+
+    Unlocks the file exactly as :func:`decrypt_file` does (KDF cost check,
+    passphrase forms, retries), then authenticates every chunk and discards
+    the plaintext. No output or temporary file is created. Raises the same
+    errors as decrypt: :class:`~filecrypt.container.WrongKeyError` for a wrong
+    key or a modified header, :class:`~filecrypt.container.CorruptedFileError`
+    for a damaged, truncated or extended body.
+    """
+    _check_cancel(cancel)
+    with _open_input(src) as f:
+        header = container.read_header(f)
+        file_key = _unlock(header, secret, kdf_memory_limit, confirm_expensive,
+                           cancel, max_attempts, on_wrong_key)
+        total = os.fstat(f.fileno()).st_size - header.header_len
+        reader = _ProgressReader(f, total, progress, cancel)
+        sink = _NullSink()
+        container.decrypt_body(header, file_key, reader, sink)
+        reader.finish()
+    return VerifyResult(sink.writes, sink.size)
 
 
 # --- internals ---------------------------------------------------------------
@@ -386,7 +527,25 @@ def _unwrap(header: container.Header, secret: Secret) -> bytes:
 
 
 def _kek(header: container.Header, secret: bytes) -> bytes:
+    if header.kdf_id == kdf.HKDF and len(secret) < kdf.MIN_KEY_BYTES:
+        # Too short to be the key, so it's a wrong key: the caller may ask again.
+        raise container.WrongKeyError(
+            f"wrong key: this file was encrypted with a key of at least {kdf.MIN_KEY_BYTES} "
+            f"bytes (such as a keyfile), not a passphrase")
     return kdf.derive_kek(header.kdf_id, header.settings, header.salt, secret)
+
+
+class _NullSink:
+    """Counts what decrypt_body would have written (one write per chunk)."""
+
+    def __init__(self) -> None:
+        self.writes = 0
+        self.size = 0
+
+    def write(self, data: bytes) -> int:
+        self.writes += 1
+        self.size += len(data)
+        return len(data)
 
 
 class _ProgressReader:
@@ -442,32 +601,43 @@ class AtomicOutput:
         if fd is None:
             fd, self._tmp = tempfile.mkstemp(prefix=f".{self.dest.name}.", suffix=".part", dir=parent)
             if os.name == "nt":
+                # Only reached when the owner-only DACL couldn't be applied at
+                # creation; restrict the file before any plaintext is written.
                 from . import _winacl
                 _winacl.restrict_to_owner(self._tmp)
         self.file = os.fdopen(fd, "wb")
         return self
 
     def _open_windows_temp(self, parent: Path) -> Optional[int]:
-        """Open a delete-on-close temp file, so Windows removes it even if we are killed.
+        """Create the owner-only temp file on Windows.
 
-        Returns None when delete-on-close can't be cleared on this Windows
-        version; the caller then uses an ordinary owner-only temp file.
+        The file is created with the owner-only DACL already applied, so the
+        plaintext is never readable by other accounts, not even for a moment.
+        It is also opened delete-on-close, so Windows removes it even if we
+        are killed. When delete-on-close can't be cleared on this Windows
+        version (needed to keep the file on commit), an ordinary owner-only
+        file is created instead. Returns None, so the caller falls back to
+        create-then-restrict, only when the DACL can't be applied at creation.
         """
-        from . import _windelete
-        flags = (os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_BINARY | os.O_NOINHERIT
-                 | os.O_TEMPORARY)
+        from . import _winacl, _windelete
+        delete_on_close = True
         for _ in range(100):
             path = str(parent / f".{self.dest.name}.{secrets.token_hex(4)}.part")
             try:
-                fd = os.open(path, flags, 0o600)
+                fd = _winacl.create_owner_only(path, delete_on_close=delete_on_close)
             except FileExistsError:
                 continue
+            if fd is None:
+                return None
+            if not delete_on_close:
+                self._tmp = path
+                return fd
             # Probe once that the flag can be toggled, so commit can clear it.
             if _windelete.set_delete_on_close(fd, True):
                 self._tmp, self._delete_on_close = path, True
                 return fd
             os.close(fd)  # deleted by Windows on close
-            return None
+            delete_on_close = False
         raise FileExistsError(errno.EEXIST, "could not create a temporary file", str(parent))
 
     def commit(self) -> None:

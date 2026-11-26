@@ -335,5 +335,11 @@ committed files still match. `tests/test_vectors.py` runs on every CI build.
 It decrypts every valid vector, checks every invalid one fails at its stage,
 and regenerates the files in memory to pin the encryption side too.
 
+[`tools/fcx_ref_decrypt.py`](../tools/fcx_ref_decrypt.py) is a small second
+decryptor written from this page alone, without filecrypt's code.
+`tests/test_reference_decryptor.py` runs it over every vector, plus bit flips,
+truncations and fresh files from filecrypt, and checks the two always agree.
+If they ever disagree, this page or the code has a bug.
+
 The vectors never change once committed. A change to the format gets a new
 version and new vectors, alongside these.

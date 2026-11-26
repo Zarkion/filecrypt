@@ -5,7 +5,7 @@ import sys
 
 import pytest
 
-from filecrypt import cli, container, sources
+from filecrypt import cli, container, engine, sources
 from filecrypt.kdf import ARGON2ID, SCRYPT, HKDF, Argon2Params
 
 FAST = ["--argon-memory", "19", "--argon-iterations", "2", "--argon-parallelism", "1"]
@@ -86,7 +86,7 @@ def test_scrypt_option(work):
 
 
 def test_argon_flags_with_scrypt_rejected(work, capsys):
-    assert cli.main(["encrypt", "plain.txt", "--key", "env:FC_PASS", "--kdf", "scrypt", *FAST]) == 1
+    assert cli.main(["encrypt", "plain.txt", "--key", "env:FC_PASS", "--kdf", "scrypt", *FAST]) == 2
     assert "argon" in capsys.readouterr().err.lower()
 
 
@@ -95,7 +95,7 @@ def test_argon_flags_with_scrypt_rejected(work, capsys):
     ["--argon-memory", "4097"], ["--argon-iterations", "17"], ["--argon-parallelism", "17"],
 ])
 def test_argon_limits_enforced(work, flags, no_prompt):
-    assert cli.main(["encrypt", "plain.txt", "--key", "env:FC_PASS", *flags]) == 1
+    assert cli.main(["encrypt", "plain.txt", "--key", "env:FC_PASS", *flags]) == 2
     assert not (work / "plain.txt.fcx").exists()
 
 
@@ -108,7 +108,7 @@ def test_short_passphrase_warns(work, monkeypatch, capsys):
 @pytest.mark.requires_argon2
 def test_short_keyfile_rejected_unless_flag(work):
     (work / "weak.key").write_bytes(b"x" * 20)
-    assert cli.main(["encrypt", "plain.txt", "--key", "file:weak.key"]) == 1
+    assert cli.main(["encrypt", "plain.txt", "--key", "file:weak.key"]) == 2
     assert not (work / "plain.txt.fcx").exists()
     assert cli.main(["encrypt", "plain.txt", "--key", "file:weak.key",
                      "--keyfile-is-passphrase", *FAST]) == 0
@@ -136,12 +136,12 @@ def test_decrypt_refuses_overwrite(work):
 
 def test_decrypt_needs_output_name_without_fcx_suffix(work):
     assert cli.main(["encrypt", "plain.txt", "-o", "blob.bin", "--key", "env:FC_PASS", *FAST]) == 0
-    assert cli.main(["decrypt", "blob.bin", "--key", "env:FC_PASS"]) == 1
+    assert cli.main(["decrypt", "blob.bin", "--key", "env:FC_PASS"]) == 2
     assert cli.main(["decrypt", "blob.bin", "-o", "x.txt", "--key", "env:FC_PASS"]) == 0
 
 
 def test_same_input_and_output_rejected(work):
-    assert cli.main(["encrypt", "plain.txt", "-o", "plain.txt", "--force", "--key", "env:FC_PASS"]) == 1
+    assert cli.main(["encrypt", "plain.txt", "-o", "plain.txt", "--force", "--key", "env:FC_PASS"]) == 2
     assert (work / "plain.txt").read_bytes() == b"hello world\n" * 1000
 
 
@@ -149,7 +149,7 @@ def test_wrong_key_leaves_nothing_behind(work, monkeypatch, capsys):
     assert cli.main(["encrypt", "plain.txt", "--key", "env:FC_PASS", *FAST]) == 0
     before = files_in(work)
     monkeypatch.setenv("FC_PASS", "the wrong passphrase")
-    assert cli.main(["decrypt", "plain.txt.fcx", "-o", "out.txt", "--key", "env:FC_PASS"]) == 1
+    assert cli.main(["decrypt", "plain.txt.fcx", "-o", "out.txt", "--key", "env:FC_PASS"]) == 4
     assert files_in(work) == before
     assert "wrong key" in capsys.readouterr().err
 
@@ -162,17 +162,17 @@ def test_tampered_body_partial_output_deleted(work, keyfile):
     blob[-100] ^= 1  # last chunk: earlier chunks decrypt fine first
     (work / "big.bin.fcx").write_bytes(bytes(blob))
     before = files_in(work)
-    assert cli.main(["decrypt", "big.bin.fcx", "-o", "out.bin", "--key", f"file:{keyfile}"]) == 1
+    assert cli.main(["decrypt", "big.bin.fcx", "-o", "out.bin", "--key", f"file:{keyfile}"]) == 5
     assert files_in(work) == before
 
 
 def test_not_an_fcx_file_fails_before_prompting(work, no_prompt, capsys):
-    assert cli.main(["decrypt", "plain.txt", "-o", "x"]) == 1
+    assert cli.main(["decrypt", "plain.txt", "-o", "x"]) == 3
     assert "not an .fcx" in capsys.readouterr().err
 
 
 def test_missing_input(work, capsys):
-    assert cli.main(["encrypt", "nope.txt", "--key", "env:FC_PASS"]) == 1
+    assert cli.main(["encrypt", "nope.txt", "--key", "env:FC_PASS"]) == 8
     assert "nope.txt" in capsys.readouterr().err
 
 
@@ -202,17 +202,17 @@ def test_keygen(work):
 
 
 def test_keygen_rules(work):
-    assert cli.main(["keygen", "b.key", "--bytes", "16"]) == 1
+    assert cli.main(["keygen", "b.key", "--bytes", "16"]) == 2
     assert not (work / "b.key").exists()
     assert cli.main(["keygen", "b.key", "--format", "base64"]) == 0
     assert (work / "b.key").read_bytes().endswith(b"\n")
-    assert cli.main(["keygen"]) == 1  # neither a path nor --store
+    assert cli.main(["keygen"]) == 2  # neither a path nor --store
 
 
 def test_keygen_store(work):
     assert cli.main(["keygen", "--store", "file:stored.key"]) == 0
     assert len((work / "stored.key").read_bytes()) == 32
-    assert cli.main(["keygen", "--store", "prompt"]) == 1
+    assert cli.main(["keygen", "--store", "prompt"]) == 7
 
 
 def test_keygen_file_and_store_hold_same_key(work):
@@ -232,7 +232,7 @@ def test_rekey_in_place_passphrase_to_keyfile(work, keyfile):
     new_h = header_of(work / "plain.txt.fcx")
     assert new_h.kdf_id == HKDF
     assert new[new_h.header_len:] == old[old_h.header_len:]  # body byte-identical
-    assert cli.main(["decrypt", "plain.txt.fcx", "-o", "a.txt", "--key", "env:FC_PASS"]) == 1
+    assert cli.main(["decrypt", "plain.txt.fcx", "-o", "a.txt", "--key", "env:FC_PASS"]) == 4
     assert cli.main(["decrypt", "plain.txt.fcx", "-o", "a.txt", "--key", f"file:{keyfile}"]) == 0
     assert (work / "a.txt").read_bytes() == (work / "plain.txt").read_bytes()
     assert files_in(work) == sorted(["a.txt", "k.key", "plain.txt", "plain.txt.fcx"])
@@ -252,7 +252,7 @@ def test_rekey_wrong_old_key_leaves_file_untouched(work, keyfile, monkeypatch):
     before = (work / "plain.txt.fcx").read_bytes()
     monkeypatch.setenv("FC_BAD", "not the passphrase")
     assert cli.main(["rekey", "plain.txt.fcx", "--key", "env:FC_BAD",
-                     "--new-key", f"file:{keyfile}"]) == 1
+                     "--new-key", f"file:{keyfile}"]) == 4
     assert (work / "plain.txt.fcx").read_bytes() == before
     assert files_in(work) == sorted(["k.key", "plain.txt", "plain.txt.fcx"])
 
@@ -265,6 +265,68 @@ def test_rekey_to_other_file_respects_force(work, keyfile):
     assert (work / "other.fcx").read_bytes() == b"keep"
     assert cli.main(args + ["--force"]) == 0
     assert cli.main(["decrypt", "other.fcx", "-o", "o.txt", "--key", f"file:{keyfile}"]) == 0
+
+
+def test_rekey_rotate_file_key(work, keyfile):
+    assert cli.main(["encrypt", "plain.txt", "--key", "env:FC_PASS", *FAST]) == 0
+    old = (work / "plain.txt.fcx").read_bytes()
+    old_h = header_of(work / "plain.txt.fcx")
+    assert cli.main(["rekey", "plain.txt.fcx", "--key", "env:FC_PASS",
+                     "--new-key", f"file:{keyfile}", "--rotate-file-key"]) == 0
+    new = (work / "plain.txt.fcx").read_bytes()
+    new_h = header_of(work / "plain.txt.fcx")
+    assert new_h.nonce_prefix != old_h.nonce_prefix
+    assert new[new_h.header_len:] != old[old_h.header_len:]
+    assert cli.main(["decrypt", "plain.txt.fcx", "-o", "a.txt", "--key", f"file:{keyfile}"]) == 0
+    assert (work / "a.txt").read_bytes() == (work / "plain.txt").read_bytes()
+
+
+def test_rekey_rotate_file_key_corrupted_exit_5(work, keyfile):
+    assert cli.main(["encrypt", "plain.txt", "--key", f"file:{keyfile}"]) == 0
+    blob = bytearray((work / "plain.txt.fcx").read_bytes())
+    blob[-1] ^= 1
+    (work / "plain.txt.fcx").write_bytes(bytes(blob))
+    assert cli.main(["rekey", "plain.txt.fcx", "--key", f"file:{keyfile}",
+                     "--new-key", "env:FC_PASS", "--rotate-file-key", *FAST]) == 5
+    assert (work / "plain.txt.fcx").read_bytes() == bytes(blob)
+    assert files_in(work) == sorted(["k.key", "plain.txt", "plain.txt.fcx"])
+
+
+# --- output name safety ------------------------------------------------------
+
+def test_decrypt_refuses_bidi_default_name(work, keyfile):
+    evil = "invoice\u202efdp.exe"
+    (work / evil).write_bytes(b"MZ not really")
+    assert cli.main(["encrypt", evil, "--key", f"file:{keyfile}"]) == 2
+    assert cli.main(["encrypt", evil, "-o", "x.fcx", "--key", f"file:{keyfile}"]) == 0
+    (work / evil).unlink()
+    (work / "x.fcx").rename(work / (evil + ".fcx"))
+    assert cli.main(["decrypt", evil + ".fcx", "--key", f"file:{keyfile}"]) == 2
+    assert not (work / evil).exists()
+    assert cli.main(["decrypt", evil + ".fcx", "-o", "safe.bin", "--key", f"file:{keyfile}"]) == 0
+    assert (work / "safe.bin").read_bytes() == b"MZ not really"
+
+
+def test_unsafe_output_name_json(work, keyfile, capsys):
+    import json
+    assert cli.main(["encrypt", "plain.txt", "-o", "a\u202eb.fcx", "--key", f"file:{keyfile}",
+                     "--json"]) == 2
+    out = json.loads(capsys.readouterr().out)
+    assert out["error"]["kind"] == "usage"
+    assert "-o" in out["error"]["message"]
+
+
+def test_rekey_refuses_unsafe_dash_o(work, keyfile):
+    assert cli.main(["encrypt", "plain.txt", "--key", f"file:{keyfile}"]) == 0
+    assert cli.main(["rekey", "plain.txt.fcx", "-o", "x\x1b.fcx", "--key", f"file:{keyfile}",
+                     "--new-key", f"file:{keyfile}"]) == 2
+    assert files_in(work) == sorted(["k.key", "plain.txt", "plain.txt.fcx"])
+
+
+def test_windows_reserved_names_refused_on_windows(work, keyfile, monkeypatch):
+    monkeypatch.setattr(engine, "_WINDOWS_NAMES", True)
+    for name in ("NUL.txt", "out.txt:stream", "trailing. "):
+        assert cli.main(["decrypt", "whatever.fcx", "-o", name, "--key", f"file:{keyfile}"]) == 2
 
 
 # --- misc --------------------------------------------------------------------
@@ -319,21 +381,21 @@ def no_derive(monkeypatch):
 
 @pytest.mark.requires_argon2
 def test_heavy_file_refused_when_not_interactive(heavy_file, no_prompt, no_derive, capsys):
-    assert cli.main(["decrypt", str(heavy_file), "-o", "out.txt"]) == 1
+    assert cli.main(["decrypt", str(heavy_file), "-o", "out.txt"]) == 6
     err = capsys.readouterr().err
     assert "2048 MiB" in err and "--max-kdf-memory" in err
     assert no_derive == []
 
 
 def test_heavy_file_refused_above_explicit_limit(heavy_file, no_prompt, no_derive):
-    assert cli.main(["decrypt", str(heavy_file), "-o", "out.txt", "--max-kdf-memory", "1024"]) == 1
+    assert cli.main(["decrypt", str(heavy_file), "-o", "out.txt", "--max-kdf-memory", "1024"]) == 6
     assert no_derive == []
 
 
 @pytest.mark.requires_argon2
 def test_heavy_file_allowed_with_explicit_limit(heavy_file, no_derive):
     assert cli.main(["decrypt", str(heavy_file), "-o", "out.txt", "--key", "env:FC_PASS",
-                     "--max-kdf-memory", "4096"]) == 1   # fails later: fake KEK
+                     "--max-kdf-memory", "4096"]) == 4   # fails later: fake KEK
     assert no_derive == [ARGON2ID]
 
 
@@ -342,16 +404,16 @@ def test_heavy_file_interactive_confirm(heavy_file, no_derive, monkeypatch):
     monkeypatch.setattr(cli, "_interactive", lambda: True)
     answers = []
     monkeypatch.setattr(cli, "_confirm", lambda prompt: answers.append(prompt) or False)
-    assert cli.main(["decrypt", str(heavy_file), "-o", "out.txt", "--key", "env:FC_PASS"]) == 1
+    assert cli.main(["decrypt", str(heavy_file), "-o", "out.txt", "--key", "env:FC_PASS"]) == 6
     assert len(answers) == 1 and no_derive == []
     monkeypatch.setattr(cli, "_confirm", lambda prompt: True)
-    assert cli.main(["decrypt", str(heavy_file), "-o", "out.txt", "--key", "env:FC_PASS"]) == 1
+    assert cli.main(["decrypt", str(heavy_file), "-o", "out.txt", "--key", "env:FC_PASS"]) == 4
     assert no_derive == [ARGON2ID]
 
 
 def test_heavy_file_rekey_refused(heavy_file, keyfile, no_derive):
     assert cli.main(["rekey", str(heavy_file), "--key", "env:FC_PASS",
-                     "--new-key", f"file:{keyfile}"]) == 1
+                     "--new-key", f"file:{keyfile}"]) == 6
     assert no_derive == []
 
 

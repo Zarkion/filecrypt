@@ -276,14 +276,14 @@ def cli_work(work, monkeypatch):
 
 def test_cli_wrong_key_message(cli_work, monkeypatch, capsys):
     monkeypatch.setenv("FC_PASS", "the wrong passphrase")
-    assert cli.main(["decrypt", "doc.bin.fcx", "-o", "o.bin", "--key", "env:FC_PASS"]) == 1
+    assert cli.main(["decrypt", "doc.bin.fcx", "-o", "o.bin", "--key", "env:FC_PASS"]) == 4
     err = capsys.readouterr().err
     assert "wrong key or passphrase" in err and "damaged" not in err
 
 
 def test_cli_damaged_message(cli_work, capsys):
     flip(cli_work / "doc.bin.fcx", -100)
-    assert cli.main(["decrypt", "doc.bin.fcx", "-o", "o.bin", "--key", "env:FC_PASS"]) == 1
+    assert cli.main(["decrypt", "doc.bin.fcx", "-o", "o.bin", "--key", "env:FC_PASS"]) == 5
     err = capsys.readouterr().err
     assert "damaged" in err and "wrong key" not in err
 
@@ -301,7 +301,7 @@ def test_cli_prompt_gives_up_after_three(cli_work, monkeypatch):
     monkeypatch.setattr(cli, "_interactive", lambda: True)
     calls = []
     monkeypatch.setattr(sources.getpass, "getpass", lambda p="": calls.append(p) or "nope nope nope")
-    assert cli.main(["decrypt", "doc.bin.fcx", "-o", "o.bin"]) == 1
+    assert cli.main(["decrypt", "doc.bin.fcx", "-o", "o.bin"]) == 4
     assert len(calls) == 3
 
 
@@ -311,5 +311,5 @@ def test_cli_non_prompt_sources_get_one_attempt(cli_work, monkeypatch):
     calls = []
     real = sources.resolve_secret
     monkeypatch.setattr(sources, "resolve_secret", lambda *a, **k: calls.append(1) or real(*a, **k))
-    assert cli.main(["decrypt", "doc.bin.fcx", "-o", "o.bin", "--key", "env:FC_PASS"]) == 1
+    assert cli.main(["decrypt", "doc.bin.fcx", "-o", "o.bin", "--key", "env:FC_PASS"]) == 4
     assert len(calls) == 1

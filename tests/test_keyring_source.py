@@ -62,6 +62,19 @@ def test_store_refuses_to_overwrite(fake_keyring):
         src.store("svc/k", b"b" * 32)
 
 
+def test_store_detects_overwrite_before_read_back(fake_keyring, monkeypatch):
+    # Another program writes the same entry just after our write.
+    real_set = fake_keyring.set_password
+
+    def racing_set(service, name, value):
+        real_set(service, name, value)
+        real_set(service, name, "fcxkey:v1:someone-else")
+
+    monkeypatch.setattr(fake_keyring, "set_password", racing_set)
+    with pytest.raises(KeySourceError, match="changed by another program"):
+        sources.get_source("keyring").store("svc/k", b"a" * 32)
+
+
 @pytest.mark.parametrize("loc", ["", "svc/", "/name"])
 def test_bad_location(fake_keyring, loc):
     with pytest.raises(KeySourceError):
@@ -81,7 +94,7 @@ def test_cli_keygen_store_and_encrypt(fake_keyring, tmp_path, monkeypatch):
     assert cli.main(["encrypt", "f.txt", "--key", "keyring:filecrypt/test"]) == 0
     assert cli.main(["decrypt", "f.txt.fcx", "-o", "g.txt", "--key", "keyring:filecrypt/test"]) == 0
     assert (tmp_path / "g.txt").read_bytes() == b"data"
-    assert cli.main(["keygen", "--store", "keyring:filecrypt/test"]) == 1
+    assert cli.main(["keygen", "--store", "keyring:filecrypt/test"]) == 7
 
 
 EXAMPLE = "MyDogSpotLovesTheParkEverySundayMorning2024x"  # 44 chars, valid base64
