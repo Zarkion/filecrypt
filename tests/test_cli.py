@@ -5,7 +5,7 @@ import sys
 
 import pytest
 
-from filecrypt import cli, container, sources
+from filecrypt import cli, container, engine, sources
 from filecrypt.kdf import ARGON2ID, SCRYPT, HKDF, Argon2Params
 
 FAST = ["--argon-memory", "19", "--argon-iterations", "2", "--argon-parallelism", "1"]
@@ -290,6 +290,43 @@ def test_rekey_rotate_file_key_corrupted_exit_5(work, keyfile):
                      "--new-key", "env:FC_PASS", "--rotate-file-key", *FAST]) == 5
     assert (work / "plain.txt.fcx").read_bytes() == bytes(blob)
     assert files_in(work) == sorted(["k.key", "plain.txt", "plain.txt.fcx"])
+
+
+# --- output name safety ------------------------------------------------------
+
+def test_decrypt_refuses_bidi_default_name(work, keyfile):
+    evil = "invoice\u202efdp.exe"
+    (work / evil).write_bytes(b"MZ not really")
+    assert cli.main(["encrypt", evil, "--key", f"file:{keyfile}"]) == 2
+    assert cli.main(["encrypt", evil, "-o", "x.fcx", "--key", f"file:{keyfile}"]) == 0
+    (work / evil).unlink()
+    (work / "x.fcx").rename(work / (evil + ".fcx"))
+    assert cli.main(["decrypt", evil + ".fcx", "--key", f"file:{keyfile}"]) == 2
+    assert not (work / evil).exists()
+    assert cli.main(["decrypt", evil + ".fcx", "-o", "safe.bin", "--key", f"file:{keyfile}"]) == 0
+    assert (work / "safe.bin").read_bytes() == b"MZ not really"
+
+
+def test_unsafe_output_name_json(work, keyfile, capsys):
+    import json
+    assert cli.main(["encrypt", "plain.txt", "-o", "a\u202eb.fcx", "--key", f"file:{keyfile}",
+                     "--json"]) == 2
+    out = json.loads(capsys.readouterr().out)
+    assert out["error"]["kind"] == "usage"
+    assert "-o" in out["error"]["message"]
+
+
+def test_rekey_refuses_unsafe_dash_o(work, keyfile):
+    assert cli.main(["encrypt", "plain.txt", "--key", f"file:{keyfile}"]) == 0
+    assert cli.main(["rekey", "plain.txt.fcx", "-o", "x\x1b.fcx", "--key", f"file:{keyfile}",
+                     "--new-key", f"file:{keyfile}"]) == 2
+    assert files_in(work) == sorted(["k.key", "plain.txt", "plain.txt.fcx"])
+
+
+def test_windows_reserved_names_refused_on_windows(work, keyfile, monkeypatch):
+    monkeypatch.setattr(engine, "_WINDOWS_NAMES", True)
+    for name in ("NUL.txt", "out.txt:stream", "trailing. "):
+        assert cli.main(["decrypt", "whatever.fcx", "-o", name, "--key", f"file:{keyfile}"]) == 2
 
 
 # --- misc --------------------------------------------------------------------

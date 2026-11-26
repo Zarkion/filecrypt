@@ -38,6 +38,7 @@ import os
 import secrets
 import tempfile
 import threading
+import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
 from typing import BinaryIO, Callable, List, Optional, Tuple, Union
@@ -80,6 +81,16 @@ class OutputExistsError(EngineError, FileExistsError):
 class SameFileError(EngineError):
     def __str__(self) -> str:
         return "output would overwrite the input file"
+
+
+class UnsafeOutputNameError(EngineError):
+    """The output file name could mislead the user or misbehave on Windows."""
+
+    def __init__(self, path: PathLike, reason: str):
+        super().__init__(f"unsafe output name {os.fspath(path)!r}: {reason}; "
+                         f"choose another name with -o")
+        self.path = Path(path)
+        self.reason = reason
 
 
 class ExpensiveKDFError(EngineError):
@@ -212,6 +223,55 @@ def default_decrypt_output(path: PathLike) -> Optional[Path]:
     if s.lower().endswith(FCX_SUFFIX) and len(Path(s).name) > len(FCX_SUFFIX):
         return Path(s[:-len(FCX_SUFFIX)])
     return None
+
+
+# Bidirectional formatting characters: embeddings, overrides (such as RTLO,
+# U+202E), isolates and the invisible direction marks. They make
+# "invoice\u202efdp.exe" display as "invoiceexe.pdf".
+_BIDI_CONTROLS = frozenset("\u061c\u200e\u200f\u202a\u202b\u202c\u202d\u202e"
+                           "\u2066\u2067\u2068\u2069")
+_WINDOWS_RESERVED = frozenset(
+    ["CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$"]
+    + [f"{p}{n}" for p in ("COM", "LPT") for n in "0123456789\u00b9\u00b2\u00b3"])
+_WINDOWS_BAD_CHARS = frozenset('<>:"|?*')
+_WINDOWS_NAMES = os.name == "nt"   # apply Windows naming rules by default
+
+
+def check_output_name(path: PathLike, *, windows: Optional[bool] = None) -> None:
+    """Raise :class:`UnsafeOutputNameError` if the output's file name is unsafe.
+
+    Only the last component is checked, since that is the part a default
+    output name takes from a possibly hostile input name. Everywhere, control
+    characters and Unicode bidi controls (which can disguise ``.exe`` as
+    ``.pdf``) are refused. With Windows rules (the default on Windows), NTFS
+    alternate data stream colons and the other characters Windows forbids,
+    trailing dots and spaces (which Windows silently strips), and reserved
+    device names such as ``CON``, ``NUL``, ``COM1`` or ``nul.txt`` are refused too.
+    """
+    if windows is None:
+        windows = _WINDOWS_NAMES
+    name = os.path.basename(os.fspath(path).rstrip("/\\" if windows else "/"))
+    if windows:
+        name = name.rsplit("\\", 1)[-1]
+    for ch in name:
+        if ch in _BIDI_CONTROLS:
+            raise UnsafeOutputNameError(
+                path, f"it contains the bidirectional control character U+{ord(ch):04X}, "
+                      f"which can disguise the real file type")
+        if unicodedata.category(ch) == "Cc":
+            raise UnsafeOutputNameError(path, f"it contains the control character U+{ord(ch):04X}")
+    if not windows:
+        return
+    for ch in name:
+        if ch in _WINDOWS_BAD_CHARS:
+            what = ("an NTFS alternate data stream separator ':'" if ch == ":"
+                    else f"the character {ch!r}, which Windows doesn't allow")
+            raise UnsafeOutputNameError(path, f"it contains {what}")
+    if name.endswith((".", " ")) and name not in (".", ".."):
+        raise UnsafeOutputNameError(path, "it ends with a dot or space, which Windows strips")
+    base = name.split(".", 1)[0].rstrip(" ").upper()
+    if base in _WINDOWS_RESERVED:
+        raise UnsafeOutputNameError(path, f"{base} is a reserved Windows device name")
 
 
 def stale_parts(dest: PathLike) -> List[Path]:

@@ -118,6 +118,24 @@ Plain `rekey` also copies the body without checking it, so corruption in the
 body is only found the next time you decrypt (`verify` checks it without
 writing anything). `--rotate-file-key` checks every chunk as it goes.
 
+### Hostile output names
+
+The default output name comes from the input's name (`invoice.pdf.fcx`
+decrypts to `invoice.pdf`), and the input may come from someone else. Before
+writing, the CLI refuses an output name, default or `-o`, that:
+
+* contains a control character, or a Unicode bidirectional control such as
+  RIGHT-TO-LEFT OVERRIDE (U+202E), which can make `invoice\u202efdp.exe`
+  display as `invoiceexe.pdf`;
+* on Windows, contains a colon (which would write an NTFS alternate data
+  stream instead of a file) or another character Windows forbids, ends with a
+  dot or space (which Windows strips silently), or is a reserved device name
+  such as `CON`, `NUL`, `COM1` or `nul.txt`.
+
+Only the file name is checked, not the folders above it. The error asks for
+a different name with `-o` (exit code 2). The check is
+`filecrypt.engine.check_output_name`, for other front-ends to call too.
+
 ### Local attackers
 
 Other user accounts on the same computer are partly in scope:
