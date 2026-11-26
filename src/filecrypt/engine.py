@@ -288,10 +288,15 @@ def encrypt_file(src: PathLike, dest: PathLike, secret: SecretArg, *,
                  progress: Optional[Progress] = None, notify: Optional[Notify] = None,
                  on_stale_parts: Optional[StaleHandler] = None,
                  cancel: Optional[CancelToken] = None) -> Path:
-    """Encrypt ``src`` to ``dest``. Returns ``dest``."""
+    """Encrypt ``src`` to ``dest``. Returns ``dest``.
+
+    Raises :class:`UnsafeOutputNameError` if ``dest`` fails
+    :func:`check_output_name`, before anything is read or written.
+    """
     options = options or EncryptOptions()
     options.validate()
     dest = Path(dest)
+    check_output_name(dest)
     _check_cancel(cancel)
     with _open_input(src) as f:
         _check_output(src, dest, force)
@@ -318,9 +323,12 @@ def decrypt_file(src: PathLike, dest: PathLike, secret: SecretArg, *, force: boo
                  on_wrong_key: Optional[WrongKeyHandler] = None) -> Path:
     """Decrypt ``src`` to ``dest``. Returns ``dest``.
 
-    ``kdf_memory_limit`` (bytes) defaults to 1 GiB or half of RAM.
+    ``kdf_memory_limit`` (bytes) defaults to 1 GiB or half of RAM. Raises
+    :class:`UnsafeOutputNameError` if ``dest`` fails :func:`check_output_name`,
+    before anything is read or written.
     """
     dest = Path(dest)
+    check_output_name(dest)
     _check_cancel(cancel)
     with _open_input(src) as f:
         header = container.read_header(f)
@@ -359,11 +367,14 @@ def rekey_file(src: PathLike, old_secret: SecretArg, new_secret: SecretArg, *,
     authentication, :class:`~filecrypt.container.CorruptedFileError` is raised
     and nothing is written.
 
-    Replaces ``src`` in place unless ``dest`` is given. ``new_secret`` is only
-    requested after ``old_secret`` has unlocked the file.
+    Replaces ``src`` in place unless ``dest`` is given, in which case ``dest``
+    must pass :func:`check_output_name`. ``new_secret`` is only requested after
+    ``old_secret`` has unlocked the file.
     """
     options = options or EncryptOptions()
     options.validate()
+    if dest is not None:
+        check_output_name(dest)
     _check_cancel(cancel)
     with _open_input(src) as f:
         header = container.read_header(f)
