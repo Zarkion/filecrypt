@@ -1,9 +1,11 @@
 name: Windows build
 
 # Builds the portable (onedir) Windows app with PyInstaller, runs the frozen
-# self-test against it, and uploads the folder as a zip. The zip is an
-# unsigned test build kept as a CI artifact only; this workflow never
-# publishes a release.
+# self-test against it, and uploads the folder as a zip. It also wraps the
+# folder in a per-user Inno Setup installer (packaging/filecrypt.iss) and
+# checks that it installs, registers with Explorer and uninstalls cleanly.
+# Both are unsigned test builds kept as CI artifacts only; this workflow
+# never publishes a release.
 
 on:
   push:
@@ -70,11 +72,66 @@ jobs:
           Compress-Archive -Path dist/filecrypt -DestinationPath "$name.zip"
           (Get-FileHash "$name.zip" -Algorithm SHA256).Hash.ToLower() + "  $name.zip" | Tee-Object "$name.zip.sha256"
           "name=$name" >> $env:GITHUB_OUTPUT
+          "version=$version" >> $env:GITHUB_OUTPUT
+          "sha=$sha" >> $env:GITHUB_OUTPUT
+      - name: Build installer (unsigned, per user)
+        id: setup
+        shell: pwsh
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) {
+            choco install innosetup --no-progress -y
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+          $name = "filecrypt-${{ steps.zip.outputs.version }}-windows-x64-unsigned-${{ steps.zip.outputs.sha }}-setup"
+          & $iscc /Qp "/DAppVersion=${{ steps.zip.outputs.version }}" "/DOutputName=$name" packaging/filecrypt.iss
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Move-Item "dist-installer/$name.exe" .
+          (Get-FileHash "$name.exe" -Algorithm SHA256).Hash.ToLower() + "  $name.exe" | Tee-Object "$name.exe.sha256"
+          "name=$name" >> $env:GITHUB_OUTPUT
+      - name: Installer smoke test (install, register, uninstall)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $app = Join-Path $env:LOCALAPPDATA "Programs\filecrypt"
+          $key = "HKCU:\Software\Classes\filecrypt.fcx\shell\decrypt\command"
+          $p = Start-Process "./${{ steps.setup.outputs.name }}.exe" -Wait -PassThru `
+            -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/LOG=setup.log"
+          if ($p.ExitCode -ne 0) { Get-Content setup.log; throw "setup exited $($p.ExitCode)" }
+          foreach ($f in "filecrypt-gui.exe", "filecrypt.exe", "unins000.exe") {
+            if (-not (Test-Path (Join-Path $app $f))) { throw "missing $f in $app" }
+          }
+          if (Test-Path (Join-Path $app "filecrypt-selftest.exe")) { throw "self-test exe was installed" }
+          $cmd = (Get-ItemProperty $key)."(default)"
+          $want = '"' + (Join-Path $app "filecrypt-gui.exe") + '" --decrypt -- "%1"'
+          if ($cmd -ne $want) { throw "registered '$cmd', expected '$want'" }
+          & (Join-Path $app "filecrypt.exe") --version
+          if ($LASTEXITCODE -ne 0) { throw "installed filecrypt.exe failed" }
+
+          $p = Start-Process (Join-Path $app "unins000.exe") -Wait -PassThru `
+            -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART"
+          if ($p.ExitCode -ne 0) { throw "uninstall exited $($p.ExitCode)" }
+          # The uninstaller hands off to a copy of itself in %TEMP%; wait for it.
+          for ($i = 0; $i -lt 60 -and (Test-Path (Join-Path $app "filecrypt-gui.exe")); $i++) { Start-Sleep 1 }
+          if (Test-Path (Join-Path $app "filecrypt-gui.exe")) { throw "uninstall left the app behind" }
+          foreach ($k in "HKCU:\Software\Classes\filecrypt.fcx",
+                         "HKCU:\Software\Classes\*\shell\filecrypt.encrypt") {
+            if (Test-Path -LiteralPath $k) { throw "uninstall left $k" }
+          }
+          "install, register, unregister and uninstall all worked"
       - uses: actions/upload-artifact@v5
         with:
           name: ${{ steps.zip.outputs.name }}
           path: |
             ${{ steps.zip.outputs.name }}.zip
             ${{ steps.zip.outputs.name }}.zip.sha256
+          if-no-files-found: error
+          retention-days: 14
+      - uses: actions/upload-artifact@v5
+        with:
+          name: ${{ steps.setup.outputs.name }}
+          path: |
+            ${{ steps.setup.outputs.name }}.exe
+            ${{ steps.setup.outputs.name }}.exe.sha256
           if-no-files-found: error
           retention-days: 14

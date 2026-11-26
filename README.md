@@ -258,6 +258,38 @@ Argon2id settings.
 GUI tests use pytest-qt and run offscreen:
 `pip install -e ".[test-gui]"` then `pytest tests/gui`.
 
+### Windows: installer and Explorer integration
+
+The easiest way onto Windows is the setup program,
+`filecrypt-<version>-windows-x64-unsigned-<commit>-setup.exe`. It installs
+for your account only, so it needs no administrator rights: the app goes to
+`%LOCALAPPDATA%\Programs\filecrypt`, gets a Start menu entry, and is added to
+Explorer. It's uninstalled from Settings > Apps like anything else, which
+also takes it out of Explorer. It needs 64-bit Windows 10 or later.
+
+**The installer is not code-signed yet**, so Windows SmartScreen says it's from
+an unknown publisher; choose "More info", then "Run anyway". Before you do,
+check the download against the `.sha256` file next to it:
+`(Get-FileHash .\filecrypt-...-setup.exe).Hash` in PowerShell should match.
+For now the installer and the portable zip are built by CI on every change
+(the "Windows build" workflow's artifacts) and aren't published as releases.
+
+Once installed (or with `filecrypt-gui --register` from a pip install or the
+portable zip), Explorer gets:
+
+- **Encrypt with filecrypt** on the right-click menu of any file. Selecting
+  several files opens one window that asks for the password once.
+- Double-clicking a `.fcx` file decrypts it, and its right-click menu has
+  **Test with filecrypt**, which checks the password and that the file is
+  intact without writing anything. If another app already opens `.fcx`
+  files, Windows leaves it in charge; pick filecrypt once under "Open with".
+
+Everything goes under `HKEY_CURRENT_USER\Software\Classes`, nothing
+machine-wide. `filecrypt-gui --unregister` removes exactly what was added.
+Both take `--quiet` to skip the confirmation box, which is what the installer
+uses; the exit code still says whether it worked. Re-run `--register` if you
+move the portable folder, because the entries point at the program's path.
+
 ## Development
 
 ```
