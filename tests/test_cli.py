@@ -70,6 +70,7 @@ def test_default_argon_settings(work):
 
 
 def test_prompt_asks_twice_on_encrypt_once_on_decrypt(work, monkeypatch):
+    monkeypatch.setattr(cli, "_can_prompt", lambda: True)
     prompts = []
     monkeypatch.setattr(sources.getpass, "getpass", lambda p="": prompts.append(p) or PASS)
     assert cli.main(["encrypt", "plain.txt", *FAST]) == 0
@@ -77,6 +78,33 @@ def test_prompt_asks_twice_on_encrypt_once_on_decrypt(work, monkeypatch):
     prompts.clear()
     assert cli.main(["decrypt", "plain.txt.fcx", "-o", "b.txt"]) == 0
     assert len(prompts) == 1
+
+
+@pytest.mark.parametrize("command", [
+    ["encrypt", "plain.txt", *FAST],
+    ["decrypt", "plain.txt.fcx", "-o", "b.txt"],
+    ["verify", "plain.txt.fcx"],
+    ["rekey", "plain.txt.fcx", "--new-key", "env:FC_PASS"],
+])
+def test_no_terminal_refuses_to_prompt(work, monkeypatch, capsys, no_prompt, command):
+    if command[0] != "encrypt":
+        assert cli.main(["encrypt", "plain.txt", *FAST, "--key", "env:FC_PASS"]) == 0
+    monkeypatch.setattr(cli, "_can_prompt", lambda: False)
+    capsys.readouterr()
+    assert cli.main([*command, "--quiet"]) == cli.EXIT_KEY_SOURCE
+    err = capsys.readouterr().err
+    assert "no terminal" in err and "--key env:VAR" in err and "Traceback" not in err
+
+
+def test_prompt_eof_is_a_clean_key_source_error(work, monkeypatch, capsys):
+    monkeypatch.setattr(cli, "_can_prompt", lambda: True)
+
+    def eof(prompt=""):
+        raise EOFError
+    monkeypatch.setattr(sources.getpass, "getpass", eof)
+    assert cli.main(["encrypt", "plain.txt", *FAST]) == cli.EXIT_KEY_SOURCE
+    assert "no terminal" in capsys.readouterr().err
+    assert not (work / "plain.txt.fcx").exists()
 
 
 def test_scrypt_option(work):

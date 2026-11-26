@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 from typing import List, Optional
@@ -133,6 +134,34 @@ def _kdf_policy(args) -> dict:
         f"filecrypt: {reason}. Files made with the defaults need 64 MiB. Continue? [y/N] ")}
 
 
+NO_TERMINAL_MESSAGE = ("no terminal to type a passphrase in; pass the key another way, "
+                       "e.g. --key env:VAR, --key file:PATH or --key stdin")
+
+
+def _can_prompt() -> bool:
+    """True when getpass can read a passphrase without echoing it or hitting EOF."""
+    if os.name != "nt":
+        try:
+            open("/dev/tty").close()     # getpass reads here first on POSIX
+            return True
+        except OSError:
+            pass
+    try:
+        return sys.stdin is not None and sys.stdin.isatty()
+    except (AttributeError, ValueError):
+        return False
+
+
+def _secret(spec: str, *, confirm: bool = False):
+    """Resolve a key spec, refusing cleanly (exit 7) to prompt with no terminal."""
+    if sources.parse_key_spec(spec)[0] == "prompt" and not _can_prompt():
+        raise KeySourceError(NO_TERMINAL_MESSAGE)
+    try:
+        return sources.resolve_secret(spec, confirm=confirm)
+    except EOFError:
+        raise KeySourceError(NO_TERMINAL_MESSAGE) from None
+
+
 PROMPT_ATTEMPTS = 3
 
 
@@ -175,7 +204,7 @@ def cmd_encrypt(args) -> dict:
     options = _encrypt_options(args)
     dest = Path(args.output) if args.output else engine.default_encrypt_output(args.input)
     engine.check_output_name(dest)
-    engine.encrypt_file(args.input, dest, lambda: sources.resolve_secret(args.key, confirm=True),
+    engine.encrypt_file(args.input, dest, lambda: _secret(args.key, confirm=True),
                         options=options, force=args.force, notify=_notice,
                         on_stale_parts=_handle_stale_parts)
     return {"input": args.input, "output": str(dest)}
@@ -188,7 +217,7 @@ def cmd_decrypt(args) -> dict:
         raise CLIError(f"{args.input} does not end in {engine.FCX_SUFFIX}; "
                        f"choose an output name with -o")
     engine.check_output_name(dest)
-    engine.decrypt_file(args.input, dest, lambda: sources.resolve_secret(args.key),
+    engine.decrypt_file(args.input, dest, lambda: _secret(args.key),
                         force=args.force, on_stale_parts=_handle_stale_parts,
                         **_kdf_policy(args), **_retry_policy(args.key))
     # Carry the Windows Mark of the Web over, so a downloaded program does not
@@ -207,12 +236,12 @@ def cmd_rekey(args) -> dict:
     def old_secret():
         if both_prompt:
             _warn("current key:")
-        return sources.resolve_secret(args.key)
+        return _secret(args.key)
 
     def new_secret():
         if both_prompt:
             _warn("new key:")
-        return sources.resolve_secret(args.new_key, confirm=True)
+        return _secret(args.new_key, confirm=True)
 
     if args.output:
         engine.check_output_name(args.output)
@@ -226,7 +255,7 @@ def cmd_rekey(args) -> dict:
 
 
 def cmd_verify(args) -> dict:
-    result = engine.verify_file(args.input, lambda: sources.resolve_secret(args.key),
+    result = engine.verify_file(args.input, lambda: _secret(args.key),
                                 **_kdf_policy(args), **_retry_policy(args.key))
     if not args.json and not _quiet:
         print(f"{args.input}: OK, {result.chunk_count} chunk"
