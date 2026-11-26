@@ -205,9 +205,8 @@ def test_part_file_restricted_when_descriptor_unavailable(open_dir, monkeypatch)
 def test_cli_decrypt_output_owner_only(open_dir, monkeypatch):
     monkeypatch.chdir(open_dir)
     monkeypatch.setenv("FC_PASS", "a perfectly fine passphrase")
-    fast = ["--argon-memory", "19", "--argon-iterations", "2", "--argon-parallelism", "1"]
     (open_dir / "doc.txt").write_bytes(b"secret")
-    assert cli.main(["encrypt", "doc.txt", "--key", "env:FC_PASS", *fast]) == 0
+    assert cli.main(["encrypt", "doc.txt", "--key", "env:FC_PASS", "--kdf", "scrypt"]) == 0
     (open_dir / "doc.txt").unlink()
     assert cli.main(["decrypt", "doc.txt.fcx", "--key", "env:FC_PASS"]) == 0
     assert (open_dir / "doc.txt").read_bytes() == b"secret"
