@@ -31,6 +31,7 @@ filecrypt decrypt report.pdf.fcx                 # -> report.pdf
 filecrypt keygen backup.key                      # 32 random bytes, created exclusively, owner-only
 filecrypt encrypt db.sqlite --key file:backup.key
 filecrypt rekey report.pdf.fcx --key prompt --new-key file:backup.key
+filecrypt rekey report.pdf.fcx --key prompt --new-key prompt --rotate-file-key  # after a leak
 filecrypt verify report.pdf.fcx --key file:backup.key  # checks every chunk, writes nothing
 filecrypt info report.pdf.fcx                    # header details, no key needed
 ```
@@ -49,7 +50,9 @@ a `.part` file behind, and for `decrypt` it may hold plaintext (owner-only:
 mode 0600, or an owner-only ACL on Windows). The next run that writes the same
 output lists any such leftovers and offers to delete them. `rekey`
 replaces the file in place (use `-o` to write a copy); it only rewrites the
-key block, so the encrypted body stays byte-identical.
+key block, so the encrypted body stays byte-identical. With
+`--rotate-file-key` it re-encrypts the whole body under a new file key
+instead (see below).
 
 ### Checking files and scripting
 
@@ -161,9 +164,12 @@ file names or sizes.
 * [Compatibility promise](docs/compatibility.md): every `.fcx` version 1 file
   stays decryptable by every future release.
 
-`rekey` changes which secret opens a file but keeps the same file key, so it
-doesn't help after a secret has leaked. In that case decrypt and encrypt the
-file again.
+Plain `rekey` changes which secret opens a file but keeps the same file key,
+so it doesn't help after a secret has leaked. In that case use
+`rekey --rotate-file-key`: it generates a new file key, checks every chunk of
+the old body and re-encrypts it, and only replaces the file once all of it has
+been written. Old copies of the file are still readable with the old secret,
+so delete them too.
 
 ## Using filecrypt from Python
 

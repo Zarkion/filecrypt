@@ -267,6 +267,31 @@ def test_rekey_to_other_file_respects_force(work, keyfile):
     assert cli.main(["decrypt", "other.fcx", "-o", "o.txt", "--key", f"file:{keyfile}"]) == 0
 
 
+def test_rekey_rotate_file_key(work, keyfile):
+    assert cli.main(["encrypt", "plain.txt", "--key", "env:FC_PASS", *FAST]) == 0
+    old = (work / "plain.txt.fcx").read_bytes()
+    old_h = header_of(work / "plain.txt.fcx")
+    assert cli.main(["rekey", "plain.txt.fcx", "--key", "env:FC_PASS",
+                     "--new-key", f"file:{keyfile}", "--rotate-file-key"]) == 0
+    new = (work / "plain.txt.fcx").read_bytes()
+    new_h = header_of(work / "plain.txt.fcx")
+    assert new_h.nonce_prefix != old_h.nonce_prefix
+    assert new[new_h.header_len:] != old[old_h.header_len:]
+    assert cli.main(["decrypt", "plain.txt.fcx", "-o", "a.txt", "--key", f"file:{keyfile}"]) == 0
+    assert (work / "a.txt").read_bytes() == (work / "plain.txt").read_bytes()
+
+
+def test_rekey_rotate_file_key_corrupted_exit_5(work, keyfile):
+    assert cli.main(["encrypt", "plain.txt", "--key", f"file:{keyfile}"]) == 0
+    blob = bytearray((work / "plain.txt.fcx").read_bytes())
+    blob[-1] ^= 1
+    (work / "plain.txt.fcx").write_bytes(bytes(blob))
+    assert cli.main(["rekey", "plain.txt.fcx", "--key", f"file:{keyfile}",
+                     "--new-key", "env:FC_PASS", "--rotate-file-key", *FAST]) == 5
+    assert (work / "plain.txt.fcx").read_bytes() == bytes(blob)
+    assert files_in(work) == sorted(["k.key", "plain.txt", "plain.txt.fcx"])
+
+
 # --- misc --------------------------------------------------------------------
 
 def test_usage_errors_exit_2(capsys):

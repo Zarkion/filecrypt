@@ -27,7 +27,7 @@ from __future__ import annotations
 import os
 import struct
 from dataclasses import dataclass
-from typing import BinaryIO, Callable
+from typing import BinaryIO, Callable, Iterator, Optional, Tuple
 
 DeriveKEK = Callable[[bytes], bytes]
 
@@ -199,6 +199,13 @@ def decrypt_body(header: Header, file_key: bytes, src: BinaryIO, dst: BinaryIO) 
     Each chunk is authenticated before it is written. Truncation, reordering
     and trailing data are all detected; the caller must discard ``dst`` on error.
     """
+    for plain, _last in _authenticated_chunks(header, file_key, src):
+        dst.write(plain)
+
+
+def _authenticated_chunks(header: Header, file_key: bytes,
+                          src: BinaryIO) -> Iterator[Tuple[bytes, bool]]:
+    """Yield ``(plaintext, last)`` for each chunk, authenticating it first."""
     aead = AESGCM(file_key)
     aad = header.chunk_aad()
     full = header.chunk_size + TAG_LEN
@@ -217,11 +224,48 @@ def decrypt_body(header: Header, file_key: bytes, src: BinaryIO, dst: BinaryIO) 
             raise CorruptedFileError(
                 "the file is damaged or was tampered with (chunk %d failed authentication)" % counter
             ) from None
-        dst.write(plain)
+        yield plain, last
         if last:
             return
         counter += 1
         current = nxt
+
+
+def reencrypt_body(header: Header, file_key: bytes, src: BinaryIO, dst: BinaryIO, *,
+                   derive_kek: DeriveKEK, kdf_id: int, settings: bytes) -> None:
+    """Rotate the file key: write a new header and body to ``dst``.
+
+    ``src`` is positioned just after ``header``. A fresh random file key and
+    nonce prefix are generated (the old prefix is never reused), and the new
+    file key is wrapped under ``derive_kek(salt)`` with a fresh salt. Every old
+    chunk is authenticated with ``file_key`` and re-encrypted as the same
+    chunk index with the same last flag and the same chunk size, so the
+    plaintext is unchanged. If any old chunk fails, an error is raised; the
+    caller must discard ``dst``.
+
+    An old file that ends in an empty final chunk after a full one (which
+    decryptors accept but encryptors must not write) is normalized: the last
+    full chunk becomes the final one.
+    """
+    new_key = os.urandom(FILE_KEY_LEN)
+    prefix = os.urandom(NONCE_PREFIX_LEN)
+    while prefix == header.nonce_prefix:  # pragma: no cover - 2**-56
+        prefix = os.urandom(NONCE_PREFIX_LEN)
+    key_block = _build_key_block(new_key, derive_kek, kdf_id, settings)
+    dst.write(key_block + prefix + struct.pack("<I", header.chunk_size))
+
+    aead = AESGCM(new_key)
+    aad = _chunk_aad(prefix, header.chunk_size)
+    counter = 0
+    pending: Optional[bytes] = None
+    for plain, last in _authenticated_chunks(header, file_key, src):
+        if pending is not None:
+            if last and not plain:
+                break  # drop the redundant empty final chunk
+            dst.write(aead.encrypt(_nonce(prefix, counter, False), pending, aad))
+            counter += 1
+        pending = plain
+    dst.write(aead.encrypt(_nonce(prefix, counter, True), pending, aad))
 
 
 def _is_valid_final(aead: AESGCM, header: Header, counter: int, chunk: bytes, aad: bytes) -> bool:

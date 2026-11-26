@@ -27,7 +27,8 @@ you make it.
     through **HKDF-SHA256**.
 * Every wrap uses a fresh random 16-byte salt, so every KEK is used once.
 * There is exactly one wrapped key per file. `rekey` replaces that one key
-  block and leaves the encrypted body byte-identical.
+  block and leaves the encrypted body byte-identical; `rekey
+  --rotate-file-key` replaces the file key too and re-encrypts the body.
 
 The full layout is in the [format spec](FORMAT.md).
 
@@ -94,17 +95,28 @@ The full layout is in the [format spec](FORMAT.md).
 * **Plaintext after you decrypt it.** Once a file is decrypted, protecting it
   is up to you and your operating system.
 
-### Rekey is not key rotation
+### Rekey is not key rotation (unless you ask for it)
 
-`rekey` re-wraps the same file key under a new secret and copies the body
-unchanged. It is fast, but it does **not** help after a secret has leaked:
-anyone who had the old key or passphrase and an old copy of the file (or the
-old header) can recover the file key, and that key still decrypts the new
-copy. If a secret may have leaked, decrypt the file and encrypt it again,
-which creates a new file key.
+Plain `rekey` re-wraps the same file key under a new secret and copies the
+body unchanged. It is fast, but it does **not** help after a secret has
+leaked: anyone who had the old key or passphrase and an old copy of the file
+(or the old header) can recover the file key, and that key still decrypts the
+new copy.
 
-`rekey` also copies the body without checking it, so corruption in the body
-is only found the next time you decrypt.
+If a secret may have leaked, use `rekey --rotate-file-key`. It generates a new
+random file key and nonce prefix, authenticates every chunk of the old body
+with the old file key and re-encrypts it under the new one. The output is
+written to a temporary file and only replaces the original once every chunk
+has been checked, so a damaged or tampered body stops the run and leaves the
+original untouched. Afterwards the old secret and old headers are useless for
+the new file. Rotation can't reach copies made before it: backups, synced
+copies and old versions of the file still open with the old secret, so delete
+or rotate those too. Decrypting and encrypting again gives the same result,
+but writes the plaintext to disk in between.
+
+Plain `rekey` also copies the body without checking it, so corruption in the
+body is only found the next time you decrypt (`verify` checks it without
+writing anything). `--rotate-file-key` checks every chunk as it goes.
 
 ### Local attackers
 
