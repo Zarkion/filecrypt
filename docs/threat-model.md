@@ -185,15 +185,20 @@ still open:
   opened). Keyfiles no longer have this problem: `keygen` creates them with
   the ACL already applied. Until `.part` files do the same, decrypt into a
   folder only you can read, such as your user profile.
-* **Azure Key Vault version is not validated** (`azkv:VAULT/SECRET/VERSION`).
-  Only an empty version is rejected; it should be checked against Key Vault's
-  32-hex-character format before reaching the SDK.
-* **"Refuse to replace" in key stores is check-then-set.** Two
-  `keygen --store` runs at the same moment could both succeed. In Key Vault
-  the older value survives as a previous version; in the OS keyring it is
-  lost.
-* **Azure identity is implicit.** `DefaultAzureCredential` uses the first
-  identity that works, and there is no option to restrict it.
+* **"Refuse to replace" in the OS keyring is check-then-set.** OS keyrings
+  have no create-only write. `keygen --store keyring:...` reads the entry back
+  after writing it and reports an error if another program changed it in
+  between, but a second writer that lands after that read can still replace
+  the key without either run noticing. The race window is small and needs two
+  `keygen --store` runs for the same entry at the same moment. In Azure Key
+  Vault the same race is detected: every write is kept as a version, and
+  `keygen --store` lists the versions after writing and reports an error if
+  another one appeared.
+* **Azure identity is chosen by azure-identity.** `DefaultAzureCredential`
+  uses the first identity that works. filecrypt has no option of its own to
+  restrict it, but the `AZURE_TOKEN_CREDENTIALS` environment variable does
+  (for example `ManagedIdentityCredential`, or `prod`); see the
+  [plugin README](../plugins/filecrypt-azkv/README.md#choosing-which-azure-identity-is-used).
 * **Secrets are not wiped from memory** (see above). Python can't fully fix
   this; filecrypt does not claim to zero secrets.
 * **Old files with decomposed accented passphrases.** Passphrases are now
