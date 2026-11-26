@@ -85,6 +85,7 @@ def test_scrypt_limits():
 
 # --- derivation --------------------------------------------------------------
 
+@pytest.mark.requires_argon2
 def test_argon2_derive_deterministic_and_salted():
     s = FAST_ARGON.encode()
     a = kdf.derive_kek(ARGON2ID, s, SALT, b"correct horse")
@@ -139,17 +140,20 @@ def test_unknown_kdf():
 
 # --- selection ---------------------------------------------------------------
 
+@pytest.mark.requires_argon2
 def test_select_passphrase_defaults_to_argon2id():
     kdf_id, settings = kdf.select_kdf(Secret(b"pw", "passphrase"))
     assert kdf_id == ARGON2ID
     assert Argon2Params.decode(settings) == Argon2Params.default()
 
 
+@pytest.mark.requires_argon2
 def test_select_custom_argon():
     kdf_id, settings = kdf.select_kdf(Secret(b"pw", "passphrase"), argon=FAST_ARGON)
     assert Argon2Params.decode(settings) == FAST_ARGON
 
 
+@pytest.mark.requires_argon2
 def test_select_rejects_argon_below_floor():
     with pytest.raises(KDFError):
         kdf.select_kdf(Secret(b"pw", "passphrase"), argon=Argon2Params(1024, 3, 4))
@@ -172,6 +176,7 @@ def test_select_key_uses_hkdf():
     assert kdf.select_kdf(Secret(b"k" * 32, "key")) == (HKDF, b"")
 
 
+@pytest.mark.requires_argon2
 def test_select_short_key_rejected_unless_passphrase_mode():
     with pytest.raises(KDFError, match="32"):
         kdf.select_kdf(Secret(b"k" * 31, "key"))
@@ -179,6 +184,7 @@ def test_select_short_key_rejected_unless_passphrase_mode():
     assert kdf_id == ARGON2ID
 
 
+@pytest.mark.requires_argon2
 def test_keyfile_is_passphrase_forces_passphrase_kdf_even_for_long_keys():
     kdf_id, _ = kdf.select_kdf(Secret(b"k" * 64, "key"), keyfile_is_passphrase=True)
     assert kdf_id == ARGON2ID

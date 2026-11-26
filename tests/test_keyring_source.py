@@ -105,6 +105,7 @@ def test_malformed_tagged_key_rejected(bad):
         sources.secret_from_stored_text(bad)
 
 
+@pytest.mark.requires_argon2
 def test_example_passphrase_in_keyring_goes_through_argon2(fake_keyring, tmp_path, monkeypatch):
     from filecrypt import container
     from filecrypt.kdf import ARGON2ID

@@ -64,6 +64,7 @@ def test_default_output_names():
     assert engine.default_decrypt_output("a/blob.bin") is None
 
 
+@pytest.mark.requires_argon2
 def test_inspect_file(work):
     engine.encrypt_file(work / "doc.bin", work / "p.fcx", PW, options=FAST)
     info = engine.inspect_file(work / "p.fcx")
@@ -177,6 +178,7 @@ def test_scrypt_fallback_notice(work, monkeypatch):
     assert any("argon2-cffi" in n for n in notes)
 
 
+@pytest.mark.requires_argon2
 def test_short_key_rejected_unless_passphrase_mode(work):
     from filecrypt.kdf import KDFError
     weak = Secret(b"x" * 20, "key")
@@ -206,6 +208,7 @@ def fake_derive(monkeypatch):
     return calls
 
 
+@pytest.mark.requires_argon2
 def test_expensive_refused_without_confirm(heavy, fake_derive):
     with pytest.raises(ExpensiveKDFError) as e:
         engine.decrypt_file(heavy, heavy.with_name("o"), lambda: pytest.fail("asked"))
@@ -220,6 +223,7 @@ def test_expensive_declined(heavy, fake_derive):
     assert fake_derive == []
 
 
+@pytest.mark.requires_argon2
 def test_expensive_accepted(heavy, fake_derive):
     asked = []
     with pytest.raises(AuthenticationError):          # fake KEK
@@ -228,6 +232,7 @@ def test_expensive_accepted(heavy, fake_derive):
     assert len(asked) == 1 and fake_derive == [ARGON2ID]
 
 
+@pytest.mark.requires_argon2
 def test_expensive_within_explicit_limit(heavy, fake_derive):
     with pytest.raises(AuthenticationError):
         engine.decrypt_file(heavy, heavy.with_name("o"), PW, kdf_memory_limit=4096 * 1024**2)

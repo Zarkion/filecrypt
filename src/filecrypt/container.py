@@ -58,6 +58,23 @@ class AuthenticationError(Exception):
     """Wrong key, or the file has been modified or truncated."""
 
 
+class WrongKeyError(AuthenticationError):
+    """The file key could not be unwrapped: wrong passphrase or key.
+
+    A modified salt, KDF id or KDF settings also end up here, since the key
+    block's authentication can't tell those apart from a wrong key.
+    """
+
+
+class CorruptedFileError(AuthenticationError):
+    """The key was right but the body failed authentication: the file is
+    damaged, truncated, reordered or was tampered with."""
+
+
+class TrailingDataError(CorruptedFileError, FormatError):
+    """Extra bytes follow the final chunk."""
+
+
 @dataclass(frozen=True)
 class Header:
     version: int
@@ -173,7 +190,7 @@ def unwrap_file_key(header: Header, kek: bytes) -> bytes:
     try:
         return AESGCM(kek).decrypt(_WRAP_NONCE, header.wrapped_key, header.key_aad())
     except InvalidTag:
-        raise AuthenticationError("wrong key, or the file header was modified") from None
+        raise WrongKeyError("wrong key or passphrase (or the file's header was modified)") from None
 
 
 def decrypt_body(header: Header, file_key: bytes, src: BinaryIO, dst: BinaryIO) -> None:
@@ -189,16 +206,16 @@ def decrypt_body(header: Header, file_key: bytes, src: BinaryIO, dst: BinaryIO) 
     current = _read_exact(src, full)
     while True:
         if len(current) < TAG_LEN:
-            raise AuthenticationError("file is truncated")
+            raise CorruptedFileError("the file is damaged: it ends early (truncated)")
         nxt = _read_exact(src, full) if len(current) == full else b""
         last = not nxt
         try:
             plain = aead.decrypt(_nonce(header.nonce_prefix, counter, last), current, aad)
         except InvalidTag:
             if not last and _is_valid_final(aead, header, counter, current, aad):
-                raise FormatError("trailing data after the final chunk") from None
-            raise AuthenticationError(
-                "file was modified or truncated (chunk %d failed authentication)" % counter
+                raise TrailingDataError("the file is damaged: trailing data after the final chunk") from None
+            raise CorruptedFileError(
+                "the file is damaged or was tampered with (chunk %d failed authentication)" % counter
             ) from None
         dst.write(plain)
         if last:

@@ -45,6 +45,23 @@ def test_write_keyfile_force_overwrites(tmp_path):
     assert [x.name for x in tmp_path.iterdir()] == ["k.key"]  # no temp left behind
 
 
+@pytest.mark.parametrize("force", [False, True])
+def test_write_keyfile_failure_leaves_nothing(tmp_path, monkeypatch, force):
+    p = tmp_path / "k.key"
+    if force:
+        p.write_bytes(b"old")
+
+    def boom(fd):
+        raise OSError("disk full")
+    monkeypatch.setattr(os, "fsync", boom)
+    with pytest.raises(OSError, match="disk full"):
+        keygen.write_keyfile(p, b"a" * 32, force=force)
+    left = sorted(x.name for x in tmp_path.iterdir())
+    assert left == (["k.key"] if force else [])
+    if force:
+        assert p.read_bytes() == b"old"
+
+
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX permission bits")
 @pytest.mark.parametrize("force", [False, True])
 def test_write_keyfile_mode_0600(tmp_path, force):
