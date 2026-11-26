@@ -442,32 +442,43 @@ class AtomicOutput:
         if fd is None:
             fd, self._tmp = tempfile.mkstemp(prefix=f".{self.dest.name}.", suffix=".part", dir=parent)
             if os.name == "nt":
+                # Only reached when the owner-only DACL couldn't be applied at
+                # creation; restrict the file before any plaintext is written.
                 from . import _winacl
                 _winacl.restrict_to_owner(self._tmp)
         self.file = os.fdopen(fd, "wb")
         return self
 
     def _open_windows_temp(self, parent: Path) -> Optional[int]:
-        """Open a delete-on-close temp file, so Windows removes it even if we are killed.
+        """Create the owner-only temp file on Windows.
 
-        Returns None when delete-on-close can't be cleared on this Windows
-        version; the caller then uses an ordinary owner-only temp file.
+        The file is created with the owner-only DACL already applied, so the
+        plaintext is never readable by other accounts, not even for a moment.
+        It is also opened delete-on-close, so Windows removes it even if we
+        are killed. When delete-on-close can't be cleared on this Windows
+        version (needed to keep the file on commit), an ordinary owner-only
+        file is created instead. Returns None, so the caller falls back to
+        create-then-restrict, only when the DACL can't be applied at creation.
         """
-        from . import _windelete
-        flags = (os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_BINARY | os.O_NOINHERIT
-                 | os.O_TEMPORARY)
+        from . import _winacl, _windelete
+        delete_on_close = True
         for _ in range(100):
             path = str(parent / f".{self.dest.name}.{secrets.token_hex(4)}.part")
             try:
-                fd = os.open(path, flags, 0o600)
+                fd = _winacl.create_owner_only(path, delete_on_close=delete_on_close)
             except FileExistsError:
                 continue
+            if fd is None:
+                return None
+            if not delete_on_close:
+                self._tmp = path
+                return fd
             # Probe once that the flag can be toggled, so commit can clear it.
             if _windelete.set_delete_on_close(fd, True):
                 self._tmp, self._delete_on_close = path, True
                 return fd
             os.close(fd)  # deleted by Windows on close
-            return None
+            delete_on_close = False
         raise FileExistsError(errno.EEXIST, "could not create a temporary file", str(parent))
 
     def commit(self) -> None:
