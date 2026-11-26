@@ -12,10 +12,16 @@ SALT = b"S" * 16
 SETTINGS = struct.pack("<IIB", 19456, 2, 1)
 
 
-def encrypt(data, chunk_size=c.DEFAULT_CHUNK_SIZE, kek=KEK, kdf_id=1, settings=SETTINGS):
+def encrypt(data, chunk_size=c.DEFAULT_CHUNK_SIZE, kek=KEK, kdf_id=1, settings=SETTINGS, salts=None):
     out = io.BytesIO()
-    c.encrypt_stream(io.BytesIO(data), out, kek=kek, kdf_id=kdf_id,
-                     settings=settings, salt=SALT, chunk_size=chunk_size)
+
+    def derive(salt):
+        if salts is not None:
+            salts.append(salt)
+        return kek
+
+    c.encrypt_stream(io.BytesIO(data), out, derive_kek=derive, kdf_id=kdf_id,
+                     settings=settings, chunk_size=chunk_size)
     return out.getvalue()
 
 
@@ -40,7 +46,9 @@ def test_round_trip_default_chunk():
 
 
 def test_header_layout():
-    blob = encrypt(b"hello", chunk_size=4096)
+    salts = []
+    blob = encrypt(b"hello", chunk_size=4096, salts=salts)
+    assert len(salts) == 1 and len(salts[0]) == 16
     assert blob[:4] == b"FCX1"
     assert blob[4] == c.VERSION
     assert blob[5] == 1
@@ -49,7 +57,7 @@ def test_header_layout():
     off = 8
     assert blob[off:off + slen] == SETTINGS
     off += slen
-    assert blob[off:off + 16] == SALT
+    assert blob[off:off + 16] == salts[0]
     off += 16 + 48 + 7
     (chunk_size,) = struct.unpack("<I", blob[off:off + 4])
     assert chunk_size == 4096
@@ -183,7 +191,10 @@ def test_rewrap_keeps_body_byte_identical():
     h = c.read_header(src)
     fk = c.unwrap_file_key(h, KEK)
     new_kek = os.urandom(32)
-    new_header = c.rewrap_header(h, fk, new_kek, kdf_id=3, settings=b"", salt=os.urandom(16))
+    seen = []
+    new_header = c.rewrap_header(h, fk, derive_kek=lambda s: seen.append(s) or new_kek,
+                                 kdf_id=3, settings=b"")
+    assert len(seen) == 1 and seen[0] != h.salt
     new_blob = new_header + blob[h.header_len:]
     assert new_blob[len(new_header):] == blob[h.header_len:]
     assert decrypt(new_blob, kek=new_kek) == decrypt(blob)
@@ -194,3 +205,33 @@ def test_rewrap_keeps_body_byte_identical():
 def test_kek_must_be_32_bytes():
     with pytest.raises(ValueError):
         encrypt(b"x", kek=b"short")
+
+
+# --- L1: the container owns the wrap salt -------------------------------------
+
+def test_container_generates_fresh_salt_every_time():
+    salts = []
+    for _ in range(3):
+        encrypt(b"x", salts=salts)
+    assert len(set(salts)) == 3
+
+
+def test_rewrap_salt_is_fresh_each_time():
+    blob = encrypt(b"x")
+    h = c.read_header(io.BytesIO(blob))
+    fk = c.unwrap_file_key(h, KEK)
+    seen = []
+    for _ in range(3):
+        c.rewrap_header(h, fk, derive_kek=lambda s: seen.append(s) or KEK, kdf_id=1, settings=SETTINGS)
+    assert len(set(seen)) == 3 and h.salt not in seen
+
+
+def test_callers_cannot_supply_a_salt():
+    with pytest.raises(TypeError):
+        c.encrypt_stream(io.BytesIO(b"x"), io.BytesIO(), derive_kek=lambda s: KEK,
+                         kdf_id=1, settings=SETTINGS, salt=SALT)
+    blob = encrypt(b"x")
+    h = c.read_header(io.BytesIO(blob))
+    with pytest.raises(TypeError):
+        c.rewrap_header(h, c.unwrap_file_key(h, KEK), derive_kek=lambda s: KEK,
+                        kdf_id=1, settings=SETTINGS, salt=SALT)

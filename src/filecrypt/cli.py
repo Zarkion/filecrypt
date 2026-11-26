@@ -118,7 +118,10 @@ def _argon_params(args) -> Optional[Argon2Params]:
 
 
 def _new_key_block(args, secret: kdf.Secret, argon: Optional[Argon2Params]):
-    """Pick the KDF for ``secret`` and derive a fresh KEK. Returns (kek, kdf_id, settings, salt)."""
+    """Pick the KDF for ``secret``. Returns (derive_kek, kdf_id, settings).
+
+    The container calls ``derive_kek`` with the fresh salt it generates.
+    """
     warning = kdf.passphrase_warning(secret)
     if warning:
         _warn(warning)
@@ -126,8 +129,11 @@ def _new_key_block(args, secret: kdf.Secret, argon: Optional[Argon2Params]):
                                       keyfile_is_passphrase=args.keyfile_is_passphrase)
     if kdf_id == kdf.HKDF and (argon is not None or args.kdf):
         _warn("warning: KDF options are ignored for keys (HKDF is used)")
-    salt = os.urandom(container.SALT_LEN)
-    return kdf.derive_kek(kdf_id, settings, salt, secret.value), kdf_id, settings, salt
+
+    def derive(salt: bytes) -> bytes:
+        return kdf.derive_kek(kdf_id, settings, salt, secret.value)
+
+    return derive, kdf_id, settings
 
 
 def _unlock(header: container.Header, spec: str) -> bytes:
@@ -166,10 +172,10 @@ def cmd_encrypt(args) -> None:
     with _open_input(args.input) as src:
         _check_output(args.input, dest, args.force)
         secret = sources.resolve_secret(args.key, confirm=True)
-        kek, kdf_id, settings, salt = _new_key_block(args, secret, argon)
+        derive, kdf_id, settings = _new_key_block(args, secret, argon)
         with AtomicOutput(dest, args.force) as out:
-            container.encrypt_stream(src, out.file, kek=kek, kdf_id=kdf_id,
-                                     settings=settings, salt=salt)
+            container.encrypt_stream(src, out.file, derive_kek=derive, kdf_id=kdf_id,
+                                     settings=settings)
             src.close()
             out.commit()
 
@@ -214,9 +220,9 @@ def cmd_rekey(args) -> None:
         if both_prompt:
             _warn("new key:")
         secret = sources.resolve_secret(args.new_key, confirm=True)
-        kek, kdf_id, settings, salt = _new_key_block(args, secret, argon)
-        new_header = container.rewrap_header(header, file_key, kek, kdf_id=kdf_id,
-                                             settings=settings, salt=salt)
+        derive, kdf_id, settings = _new_key_block(args, secret, argon)
+        new_header = container.rewrap_header(header, file_key, derive_kek=derive,
+                                             kdf_id=kdf_id, settings=settings)
         with AtomicOutput(dest, force=in_place or args.force) as out:
             out.file.write(new_header)
             shutil.copyfileobj(src, out.file, 1024 * 1024)

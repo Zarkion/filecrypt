@@ -9,7 +9,9 @@ Layout (integers little-endian unless noted):
 Each file gets a fresh random 32-byte file key. It is wrapped once with
 AES-256-GCM under a key-encryption key (KEK) derived from the user's secret.
 The wrap uses an all-zero nonce: that is safe because every wrap uses a fresh
-random salt, so every KEK is used exactly once.
+random salt, so every KEK is used exactly once. The container generates that
+salt itself and only asks the caller to derive a KEK from it, so no caller can
+reuse a salt by mistake.
 
 Chunk nonces follow the STREAM construction:
     nonce_prefix[7] | counter u32 big-endian | last_flag u8 (0x00 / 0x01)
@@ -25,7 +27,9 @@ from __future__ import annotations
 import os
 import struct
 from dataclasses import dataclass
-from typing import BinaryIO
+from typing import BinaryIO, Callable
+
+DeriveKEK = Callable[[bytes], bytes]
 
 from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
@@ -97,7 +101,9 @@ def _check_key_params(kek: bytes, kdf_id: int, settings: bytes, salt: bytes) -> 
         raise ValueError("salt must be 16 bytes")
 
 
-def _build_key_block(file_key: bytes, kek: bytes, kdf_id: int, settings: bytes, salt: bytes) -> bytes:
+def _build_key_block(file_key: bytes, derive_kek: DeriveKEK, kdf_id: int, settings: bytes) -> bytes:
+    salt = os.urandom(SALT_LEN)
+    kek = derive_kek(salt)
     _check_key_params(kek, kdf_id, settings, salt)
     aad = _key_aad(kdf_id, settings, salt)
     wrapped = AESGCM(kek).encrypt(_WRAP_NONCE, file_key, aad)
@@ -105,15 +111,18 @@ def _build_key_block(file_key: bytes, kek: bytes, kdf_id: int, settings: bytes, 
     return aad + wrapped
 
 
-def encrypt_stream(src: BinaryIO, dst: BinaryIO, *, kek: bytes, kdf_id: int,
-                   settings: bytes, salt: bytes,
-                   chunk_size: int = DEFAULT_CHUNK_SIZE) -> None:
-    """Encrypt everything readable from ``src`` into ``dst``."""
+def encrypt_stream(src: BinaryIO, dst: BinaryIO, *, derive_kek: DeriveKEK, kdf_id: int,
+                   settings: bytes, chunk_size: int = DEFAULT_CHUNK_SIZE) -> None:
+    """Encrypt everything readable from ``src`` into ``dst``.
+
+    ``derive_kek(salt)`` is called once with a fresh random 16-byte salt and
+    must return the 32-byte KEK for that salt.
+    """
     if not MIN_CHUNK_SIZE <= chunk_size <= MAX_CHUNK_SIZE:
         raise ValueError(f"chunk size must be between {MIN_CHUNK_SIZE} and {MAX_CHUNK_SIZE}")
     file_key = os.urandom(FILE_KEY_LEN)
     nonce_prefix = os.urandom(NONCE_PREFIX_LEN)
-    key_block = _build_key_block(file_key, kek, kdf_id, settings, salt)
+    key_block = _build_key_block(file_key, derive_kek, kdf_id, settings)
     dst.write(key_block + nonce_prefix + struct.pack("<I", chunk_size))
 
     aead = AESGCM(file_key)
@@ -206,15 +215,14 @@ def _is_valid_final(aead: AESGCM, header: Header, counter: int, chunk: bytes, aa
         return False
 
 
-def rewrap_header(header: Header, file_key: bytes, kek: bytes, *, kdf_id: int,
-                  settings: bytes, salt: bytes) -> bytes:
-    """Return a new header with the file key wrapped under ``kek``.
+def rewrap_header(header: Header, file_key: bytes, *, derive_kek: DeriveKEK, kdf_id: int,
+                  settings: bytes) -> bytes:
+    """Return a new header with the file key wrapped under a new KEK.
 
-    The body that follows the old header can be copied unchanged.
+    ``derive_kek(salt)`` is called with a fresh random salt. The body that
+    follows the old header can be copied unchanged.
     """
-    if salt == header.salt:
-        raise ValueError("rekey must use a fresh salt")
-    block = _build_key_block(file_key, kek, kdf_id, settings, salt)
+    block = _build_key_block(file_key, derive_kek, kdf_id, settings)
     return block + header.nonce_prefix + struct.pack("<I", header.chunk_size)
 
 
