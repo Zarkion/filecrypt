@@ -339,11 +339,14 @@ def test_json_escapes_odd_file_names(work, capsys):
     except OSError:
         pytest.skip("this filesystem doesn't allow such names")
     assert cli.main(["keygen", "k.key", "-q"]) == 0
-    assert cli.main(["encrypt", name, "--key", "file:k.key", "--json"]) == 0
+    # A control character (the tab) is refused in an output name, so the
+    # output keeps the other odd characters and drops it.
+    out = name.replace("\t", "") + ".fcx"
+    assert cli.main(["encrypt", name, "-o", out, "--key", "file:k.key", "--json"]) == 0
     line = capsys.readouterr().out
     assert line.count("\n") == 1 and line.isascii()
     r = json.loads(line)
-    assert r["input"] == name and r["output"] == name + ".fcx"
+    assert r["input"] == name and r["output"] == out
 
 
 def test_json_decrypt_and_rekey(keyed, capsys):

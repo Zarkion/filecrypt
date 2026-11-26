@@ -354,6 +354,65 @@ def test_rotate_file_key_cancel_leaves_original(work):
     assert names(work) == ["doc.bin", "r.fcx"]
 
 
+# --- output name safety ------------------------------------------------------------
+
+@pytest.mark.parametrize("name", [
+    "invoice\u202efdp.exe",          # RTLO: shows as invoiceexe.pdf
+    "a\u202db.txt", "a\u2066b.txt", "a\u2069b", "a\u200fb", "a\u061cb",
+    "tab\there", "new\nline", "nul\x00byte", "esc\x1b[31m", "del\x7f", "c1\x85",
+])
+def test_unsafe_names_everywhere(name):
+    for windows in (False, True):
+        with pytest.raises(engine.UnsafeOutputNameError, match="choose another name with -o"):
+            engine.check_output_name(name, windows=windows)
+
+
+@pytest.mark.parametrize("name", [
+    "report.pdf:hidden", "report.pdf:Zone.Identifier", "a<b", "a>b", 'a"b', "a|b", "a?b", "a*b",
+    "report.", "report ", "report.pdf...", "report.pdf. ",
+    "CON", "con", "nul.txt", "NUL.tar.gz", "Aux", "PRN.pdf", "COM1", "com9.log", "LPT1",
+    "COM0", "lpt\u00b9", "CONIN$", "conout$.txt", "nul .txt",
+])
+def test_unsafe_names_on_windows(name):
+    with pytest.raises(engine.UnsafeOutputNameError):
+        engine.check_output_name(name, windows=True)
+    engine.check_output_name(name, windows=False)   # fine on Linux and macOS
+
+
+@pytest.mark.parametrize("name", [
+    "report.pdf", "r\u00e9sum\u00e9.docx", "\u05e9\u05dc\u05d5\u05dd.txt", "\u0645\u0644\u0641.pdf",
+    "CONSOLE.txt", "nuller", "COM10", "LPT", "my con.txt", ".hidden", "a.b.c",
+    "emoji \U0001f600.png", "zwj\u200d.txt",
+])
+def test_safe_names(name):
+    for windows in (False, True):
+        engine.check_output_name(name, windows=windows)
+
+
+def test_only_the_last_component_is_checked():
+    engine.check_output_name(os.path.join("CON.d", "report.pdf"), windows=True)
+    engine.check_output_name("C:\\Users\\x\\report.pdf", windows=True)
+    with pytest.raises(engine.UnsafeOutputNameError):
+        engine.check_output_name("C:\\Users\\x\\nul.txt", windows=True)
+    with pytest.raises(engine.UnsafeOutputNameError):
+        engine.check_output_name(os.path.join("dir", "a\u202eb"), windows=False)
+
+
+def test_check_output_name_accepts_path_objects():
+    from pathlib import Path
+    with pytest.raises(engine.UnsafeOutputNameError) as e:
+        engine.check_output_name(Path("x") / "evil\u202etxt.exe", windows=False)
+    assert "U+202E" in str(e.value)
+
+
+def test_check_output_name_default_platform(monkeypatch):
+    monkeypatch.setattr(engine, "_WINDOWS_NAMES", True)
+    with pytest.raises(engine.UnsafeOutputNameError):
+        engine.check_output_name("CON")
+    monkeypatch.setattr(engine, "_WINDOWS_NAMES", False)
+    engine.check_output_name("CON")
+
+
 # --- stale partial files ----------------------------------------------------------
 
 def test_stale_parts(work):
