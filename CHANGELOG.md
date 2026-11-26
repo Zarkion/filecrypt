@@ -52,6 +52,9 @@ the `.fcx` v1 format is frozen.
 
 ### Security
 
+- `decrypt` on Windows copies the Mark of the Web (the `Zone.Identifier`
+  stream) from the `.fcx` file to the decrypted file, as the desktop window
+  does, and warns when the destination cannot hold it.
 - Keyfiles on Windows are created with an owner-only ACL already applied, so
   no other local account can open the file before it is locked down.
 - `decrypt` and `rekey` check a file's KDF cost before asking for the key, cap

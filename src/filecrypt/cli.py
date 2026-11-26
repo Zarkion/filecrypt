@@ -13,7 +13,7 @@ import sys
 from pathlib import Path
 from typing import List, Optional
 
-from . import __version__, engine, keygen, sources
+from . import __version__, _motw, engine, keygen, sources
 from . import container, kdf
 from .container import AuthenticationError, CorruptedFileError, FormatError, WrongKeyError
 from .kdf import Argon2Params, KDFError
@@ -191,6 +191,11 @@ def cmd_decrypt(args) -> dict:
     engine.decrypt_file(args.input, dest, lambda: sources.resolve_secret(args.key),
                         force=args.force, on_stale_parts=_handle_stale_parts,
                         **_kdf_policy(args), **_retry_policy(args.key))
+    # Carry the Windows Mark of the Web over, so a downloaded program does not
+    # come back out looking local. Does nothing on other systems.
+    if _motw.copy_zone_identifier(args.input, dest) is False:
+        _warn(f"{args.input} is marked as downloaded from the internet, but the mark "
+              f"could not be copied to {dest}. Treat that file with the same care.")
     return {"input": args.input, "output": str(dest)}
 
 
