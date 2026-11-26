@@ -34,9 +34,9 @@ filecrypt rekey report.pdf.fcx --key prompt --new-key file:backup.key
 ```
 
 Keyfiles are readable only by you: mode 0600 on Linux and macOS, and on
-Windows a protected ACL granting only your account and SYSTEM (inherited
-folder permissions are removed). If Windows refuses the ACL change, keygen
-warns and the file keeps the folder's permissions.
+Windows a protected ACL granting only your account and SYSTEM, applied as the
+file is created (inherited folder permissions never reach it). If Windows
+refuses the ACL, keygen warns and the file keeps the folder's permissions.
 
 Nothing is overwritten without `--force`. Output is written to a temp file
 (`.<name>.<random>.part` next to the output) and renamed into place, and
