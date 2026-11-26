@@ -31,8 +31,9 @@ is the same command CI uses on its 32-bit and ARM64 Windows runners.
 * **A lost password means a lost file.** There is no recovery. Keep the
   password or keyfile in a password manager, and keep a backup of it.
 * **Names, sizes and dates stay visible.** filecrypt encrypts a file's
-  contents only. The file name, its exact size and its timestamps can still
-  be seen by anyone who has the `.fcx` file.
+  contents only. The file name, its exact size and roughly when it was
+  encrypted (the `.fcx` file's own dates) can still be seen by anyone who has
+  the `.fcx` file.
 * **Deleting the original is not secure erasure.** On SSDs, cloud-synced
   folders and backups the old data can often still be recovered.
 * **No independent audit.** filecrypt was written largely with an AI coding

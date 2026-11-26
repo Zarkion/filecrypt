@@ -831,8 +831,8 @@ class MainWindow(QMainWindow):
         name = html.escape(dest.name)
         if self.mode == ENCRYPT:
             text = (f"Done. Encrypted to <b>{name}</b>. The original file "
-                    f"is unchanged. Before deleting it, use Verify to check the new file opens, "
-                    f"and keep the password somewhere safe.")
+                    f"is unchanged. Before deleting it, open <b>{name}</b> here and choose Verify "
+                    f"to check it opens, and keep the password somewhere safe.")
         elif self.mode == TEST:
             text = (f"<b>{name}</b> is intact: the password is right and the file hasn't "
                     f"been damaged or changed since it was encrypted.")
