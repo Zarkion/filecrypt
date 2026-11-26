@@ -10,11 +10,10 @@ writing anything, for the "Test with filecrypt" entry on .fcx files.
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 from typing import Callable, Optional
 
-from .. import container, engine
+from .. import engine
 from ..engine import CancelToken
 from ..kdf import Secret
 from .worker import ASK_EXPENSIVE, MAX_PASSWORD_ATTEMPTS, Job, JobSpec, classify
@@ -22,29 +21,14 @@ from .worker import ASK_EXPENSIVE, MAX_PASSWORD_ATTEMPTS, Job, JobSpec, classify
 TEST = "test"
 
 
-class _NullSink:
-    def write(self, data: bytes) -> int:
-        return len(data)
-
-
 def verify_file(src: Path, secret: Callable[[], Secret], *, progress=None,
                 confirm_expensive=None, cancel: Optional[CancelToken] = None,
                 max_attempts: int = 1, on_wrong_key=None) -> None:
-    """Unlock ``src`` and authenticate every chunk without writing anything.
-
-    Uses the same KDF-cost check, passphrase forms and retry path as
-    ``engine.decrypt_file`` and raises the same errors.
-    """
-    # TODO: switch to engine.verify_file once the engine has one.
-    engine._check_cancel(cancel)
-    with engine._open_input(src) as f:
-        header = container.read_header(f)
-        file_key = engine._unlock(header, secret, None, confirm_expensive, cancel,
-                                  max_attempts, on_wrong_key)
-        total = os.fstat(f.fileno()).st_size - header.header_len
-        reader = engine._ProgressReader(f, total, progress, cancel)
-        container.decrypt_body(header, file_key, reader, _NullSink())
-        reader.finish()
+    """Unlock ``src`` and authenticate every chunk without writing anything
+    (``engine.verify_file``: same KDF-cost check, passphrase forms and retries
+    as decrypt, and the same errors)."""
+    engine.verify_file(src, secret, progress=progress, confirm_expensive=confirm_expensive,
+                       cancel=cancel, max_attempts=max_attempts, on_wrong_key=on_wrong_key)
 
 
 class BatchJob(Job):
