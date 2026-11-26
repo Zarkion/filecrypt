@@ -4,7 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "filecrypt"
-version = "0.1.0"
+# The version lives in src/filecrypt/__init__.py (__version__) and nowhere else.
+dynamic = ["version"]
 description = "Encrypt files to the .fcx format (AES-256-GCM STREAM, Argon2id/scrypt/HKDF)"
 readme = "README.md"
 requires-python = ">=3.9"
@@ -19,6 +20,9 @@ test = ["pytest>=7"]
 
 [project.scripts]
 filecrypt = "filecrypt.cli:main"
+
+[tool.setuptools.dynamic]
+version = { attr = "filecrypt.__version__" }
 
 [tool.setuptools.packages.find]
 where = ["src"]
