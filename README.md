@@ -122,10 +122,18 @@ engine.decrypt_file("report.pdf.fcx", "report.pdf", ask_password,
                     confirm_expensive=lambda reason: yes_no_dialog(reason))
 ```
 
-Errors a user should see derive from `engine.EngineError`
+For a background worker thread, pass `cancel=engine.CancelToken()` and call
+`token.cancel()` from the UI: the operation stops before the next KDF run or
+chunk, raises `engine.Cancelled` and leaves no partial output. Pass
+`max_attempts=3` (with a callable secret) to re-ask after a wrong password
+without reopening the file; `on_wrong_key(attempt)` fires before each retry.
+
+A wrong password or key raises `container.WrongKeyError`. A file that unlocks
+but then fails authentication (damaged, truncated or tampered with) raises
+`container.CorruptedFileError`. Both are `container.AuthenticationError`
+subclasses. Other errors a user should see derive from `engine.EngineError`
 (`OutputExistsError`, `SameFileError`, `ExpensiveKDFError`, `Cancelled`,
-`InputError`), alongside `container.FormatError`, `container.AuthenticationError`
-and `kdf.KDFError`.
+`InputError`), alongside `container.FormatError` and `kdf.KDFError`.
 
 ## Writing a key-source plugin
 

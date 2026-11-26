@@ -15,6 +15,16 @@ to see or decide goes through callbacks:
   such files raise :class:`ExpensiveKDFError`.
 * ``on_stale_parts(paths)`` is told about partial files an earlier
   interrupted run left next to the output.
+* ``cancel`` is a :class:`CancelToken`. Calling ``token.cancel()`` from any
+  thread stops the operation at the next check (before each KDF run and
+  between chunks) with :class:`Cancelled`, leaving no partial output.
+* ``max_attempts`` lets a callable ``secret`` be asked again after a wrong
+  passphrase or key, without reopening the file or redoing the checks;
+  ``on_wrong_key(attempt)`` is called before each new attempt.
+
+A wrong passphrase or key raises :class:`~filecrypt.container.WrongKeyError`;
+a damaged or tampered file raises
+:class:`~filecrypt.container.CorruptedFileError`.
 
 Output is always written atomically and never replaces an existing file
 unless ``force`` is set.
@@ -27,6 +37,7 @@ import glob
 import os
 import secrets
 import tempfile
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import BinaryIO, Callable, List, Optional, Tuple, Union
@@ -42,6 +53,7 @@ Progress = Callable[[int, int], None]
 Notify = Callable[[str], None]
 ConfirmExpensive = Callable[[str], bool]
 StaleHandler = Callable[[List[Path]], None]
+WrongKeyHandler = Callable[[int], None]
 
 
 # --- errors ------------------------------------------------------------------
@@ -85,6 +97,29 @@ class ExpensiveKDFError(EngineError):
 class Cancelled(EngineError):
     def __str__(self) -> str:
         return "cancelled"
+
+
+class CancelToken:
+    """Thread-safe cancel flag. A GUI keeps one per running operation."""
+
+    def __init__(self) -> None:
+        self._event = threading.Event()
+
+    def cancel(self) -> None:
+        self._event.set()
+
+    @property
+    def cancelled(self) -> bool:
+        return self._event.is_set()
+
+    def raise_if_cancelled(self) -> None:
+        if self._event.is_set():
+            raise Cancelled()
+
+
+def _check_cancel(token: Optional[CancelToken]) -> None:
+    if token is not None:
+        token.raise_if_cancelled()
 
 
 # --- options and file info ---------------------------------------------------
@@ -149,22 +184,25 @@ def stale_parts(dest: PathLike) -> List[Path]:
 def encrypt_file(src: PathLike, dest: PathLike, secret: SecretArg, *,
                  options: Optional[EncryptOptions] = None, force: bool = False,
                  progress: Optional[Progress] = None, notify: Optional[Notify] = None,
-                 on_stale_parts: Optional[StaleHandler] = None) -> Path:
+                 on_stale_parts: Optional[StaleHandler] = None,
+                 cancel: Optional[CancelToken] = None) -> Path:
     """Encrypt ``src`` to ``dest``. Returns ``dest``."""
     options = options or EncryptOptions()
     options.validate()
     dest = Path(dest)
+    _check_cancel(cancel)
     with _open_input(src) as f:
         _check_output(src, dest, force)
         _report_stale(dest, on_stale_parts)
-        derive, kdf_id, settings = _new_key_block(_resolve(secret), options, notify)
+        derive, kdf_id, settings = _new_key_block(_resolve(secret), options, notify, cancel)
         total = os.fstat(f.fileno()).st_size
-        reader = _ProgressReader(f, total, progress)
+        reader = _ProgressReader(f, total, progress, cancel)
         with AtomicOutput(dest, force) as out:
             container.encrypt_stream(reader, out.file, derive_kek=derive, kdf_id=kdf_id,
                                      settings=settings)
             reader.finish()
             f.close()
+            _check_cancel(cancel)
             out.commit()
     return dest
 
@@ -173,23 +211,28 @@ def decrypt_file(src: PathLike, dest: PathLike, secret: SecretArg, *, force: boo
                  progress: Optional[Progress] = None,
                  kdf_memory_limit: Optional[int] = None,
                  confirm_expensive: Optional[ConfirmExpensive] = None,
-                 on_stale_parts: Optional[StaleHandler] = None) -> Path:
+                 on_stale_parts: Optional[StaleHandler] = None,
+                 cancel: Optional[CancelToken] = None, max_attempts: int = 1,
+                 on_wrong_key: Optional[WrongKeyHandler] = None) -> Path:
     """Decrypt ``src`` to ``dest``. Returns ``dest``.
 
     ``kdf_memory_limit`` (bytes) defaults to 1 GiB or half of RAM.
     """
     dest = Path(dest)
+    _check_cancel(cancel)
     with _open_input(src) as f:
         header = container.read_header(f)
         _check_output(src, dest, force)
         _report_stale(dest, on_stale_parts)
-        file_key = _unlock(header, secret, kdf_memory_limit, confirm_expensive)
+        file_key = _unlock(header, secret, kdf_memory_limit, confirm_expensive,
+                           cancel, max_attempts, on_wrong_key)
         total = os.fstat(f.fileno()).st_size - header.header_len
-        reader = _ProgressReader(f, total, progress)
+        reader = _ProgressReader(f, total, progress, cancel)
         with AtomicOutput(dest, force) as out:
             container.decrypt_body(header, file_key, reader, out.file)
             reader.finish()
             f.close()
+            _check_cancel(cancel)
             out.commit()
     return dest
 
@@ -199,7 +242,9 @@ def rekey_file(src: PathLike, old_secret: SecretArg, new_secret: SecretArg, *,
                force: bool = False, progress: Optional[Progress] = None,
                notify: Optional[Notify] = None, kdf_memory_limit: Optional[int] = None,
                confirm_expensive: Optional[ConfirmExpensive] = None,
-               on_stale_parts: Optional[StaleHandler] = None) -> Path:
+               on_stale_parts: Optional[StaleHandler] = None,
+               cancel: Optional[CancelToken] = None, max_attempts: int = 1,
+               on_wrong_key: Optional[WrongKeyHandler] = None) -> Path:
     """Wrap the file key under a new key without re-encrypting the body.
 
     Replaces ``src`` in place unless ``dest`` is given. ``new_secret`` is only
@@ -208,6 +253,7 @@ def rekey_file(src: PathLike, old_secret: SecretArg, new_secret: SecretArg, *,
     """
     options = options or EncryptOptions()
     options.validate()
+    _check_cancel(cancel)
     with _open_input(src) as f:
         header = container.read_header(f)
         in_place = dest is None
@@ -222,21 +268,23 @@ def rekey_file(src: PathLike, old_secret: SecretArg, new_secret: SecretArg, *,
             if not in_place and dest.exists() and not force:
                 raise OutputExistsError(dest)
         _report_stale(dest, on_stale_parts)
-        file_key = _unlock(header, old_secret, kdf_memory_limit, confirm_expensive)
-        derive, kdf_id, settings = _new_key_block(_resolve(new_secret), options, notify)
+        file_key = _unlock(header, old_secret, kdf_memory_limit, confirm_expensive,
+                           cancel, max_attempts, on_wrong_key)
+        derive, kdf_id, settings = _new_key_block(_resolve(new_secret), options, notify, cancel)
         new_header = container.rewrap_header(header, file_key, derive_kek=derive,
                                              kdf_id=kdf_id, settings=settings)
         total = os.fstat(f.fileno()).st_size - header.header_len
-        reader = _ProgressReader(f, total, progress)
+        reader = _ProgressReader(f, total, progress, cancel)
         with AtomicOutput(dest, force=in_place or force) as out:
             out.file.write(new_header)
             while True:
-                block = reader.read(1024 * 1024)
+                block = reader.read(container.DEFAULT_CHUNK_SIZE)  # fine-grained progress and cancel
                 if not block:
                     break
                 out.file.write(block)
             reader.finish()
             f.close()  # Windows cannot replace a file that is still open
+            _check_cancel(cancel)
             out.commit()
     return dest
 
@@ -276,8 +324,9 @@ def _report_stale(dest: Path, handler: Optional[StaleHandler]) -> None:
             handler(found)
 
 
-def _new_key_block(secret: Secret, options: EncryptOptions,
-                   notify: Optional[Notify]) -> Tuple[Callable[[bytes], bytes], int, bytes]:
+def _new_key_block(secret: Secret, options: EncryptOptions, notify: Optional[Notify],
+                   cancel: Optional[CancelToken] = None
+                   ) -> Tuple[Callable[[bytes], bytes], int, bytes]:
     say = notify or (lambda msg: None)
     warning = kdf.passphrase_warning(secret)
     if warning:
@@ -289,13 +338,17 @@ def _new_key_block(secret: Secret, options: EncryptOptions,
         say("warning: KDF options are ignored for keys (HKDF is used)")
 
     def derive(salt: bytes) -> bytes:
-        return kdf.derive_kek(kdf_id, settings, salt, secret.value)
+        _check_cancel(cancel)
+        kek = kdf.derive_kek(kdf_id, settings, salt, secret.value)
+        _check_cancel(cancel)
+        return kek
 
     return derive, kdf_id, settings
 
 
 def _unlock(header: container.Header, secret: SecretArg, limit: Optional[int],
-            confirm: Optional[ConfirmExpensive]) -> bytes:
+            confirm: Optional[ConfirmExpensive], cancel: Optional[CancelToken] = None,
+            max_attempts: int = 1, on_wrong_key: Optional[WrongKeyHandler] = None) -> bytes:
     if limit is None:
         limit = kdf.default_kdf_memory_limit()
     reason = kdf.expensive_kdf_reason(header.kdf_id, header.settings, limit)
@@ -304,20 +357,36 @@ def _unlock(header: container.Header, secret: SecretArg, limit: Optional[int],
             raise ExpensiveKDFError(reason, limit)
         if not confirm(reason):
             raise Cancelled()
-    value = _resolve(secret)
-    kek = kdf.derive_kek(header.kdf_id, header.settings, header.salt, value.value)
-    return container.unwrap_file_key(header, kek)
+    attempt = 0
+    while True:
+        attempt += 1
+        _check_cancel(cancel)
+        value = _resolve(secret)
+        _check_cancel(cancel)
+        kek = kdf.derive_kek(header.kdf_id, header.settings, header.salt, value.value)
+        _check_cancel(cancel)
+        try:
+            return container.unwrap_file_key(header, kek)
+        except container.WrongKeyError:
+            # Asking again only helps if the caller can supply a different secret.
+            if not callable(secret) or attempt >= max_attempts:
+                raise
+            if on_wrong_key is not None:
+                on_wrong_key(attempt)
 
 
 class _ProgressReader:
-    """Wrap a binary file and report bytes read."""
+    """Wrap a binary file, report bytes read and honour cancellation."""
 
-    def __init__(self, f: BinaryIO, total: int, progress: Optional[Progress]):
+    def __init__(self, f: BinaryIO, total: int, progress: Optional[Progress],
+                 cancel: Optional[CancelToken] = None):
         self._f, self._total, self._progress = f, max(total, 0), progress
+        self._cancel = cancel
         self._done = 0
         self._last = -1
 
     def read(self, n: int = -1) -> bytes:
+        _check_cancel(self._cancel)      # between chunks
         data = self._f.read(n)
         if data:
             self._done += len(data)
