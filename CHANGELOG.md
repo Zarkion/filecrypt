@@ -35,6 +35,10 @@ the `.fcx` v1 format is frozen.
   (`CorruptedFileError`), can ask for a password again without reopening the
   file, and can be cancelled from another thread with no partial output.
   The CLI gives typed passphrases three tries on a terminal.
+- The CLI never prompts without a terminal. A passphrase prompt exits with
+  code 7 and names the other key sources, so input piped in on Windows now
+  refuses to prompt instead of failing. A yes/no question whose answer can't
+  be read counts as "no" and names the flag that answers it ahead of time.
 - Passphrases are encoded as NFC UTF-8. Decrypt and rekey try the NFC bytes
   first and then the exact bytes, so files made before the change still open.
 - `docs/FORMAT.md`, a byte-level specification of `.fcx` v1, and frozen test
