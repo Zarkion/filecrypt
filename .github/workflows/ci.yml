@@ -43,9 +43,7 @@ jobs:
           - { os: windows-latest, arch: x64, python: "3.14" }
           - { os: windows-latest, arch: x86, python: "3.9" }
           - { os: windows-latest, arch: x86, python: "3.14" }
-          # Newest cryptography releases can land before their Windows arm64
-          # wheel; take the newest one that has a wheel instead of building it.
-          - { os: windows-11-arm, arch: arm64, python: "3.14", pip-args: "--only-binary=cryptography" }
+          - { os: windows-11-arm, arch: arm64, python: "3.14" }
           # macOS arm64 and Intel
           - { os: macos-latest, arch: arm64, python: "3.10" }
           - { os: macos-latest, arch: arm64, python: "3.14" }
@@ -59,7 +57,10 @@ jobs:
           cache: pip
           cache-dependency-path: "**/pyproject.toml"
       - name: Install
-        run: python -m pip install ${{ matrix.pip-args }} -e ".[test]" -e plugins/filecrypt-azkv
+        # cryptography 50 ships no wheel for 32-bit or arm64 Windows, and
+        # building it needs Rust and OpenSSL. Take the newest release that has
+        # a wheel for this platform; the backend check prints which one.
+        run: python -m pip install --only-binary=cryptography -e ".[test]" -e plugins/filecrypt-azkv
       - name: Check Argon2 backend
         run: python .github/scripts/check_ci_env.py backend native
       - name: Test
