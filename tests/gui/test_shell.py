@@ -266,6 +266,7 @@ def test_dash_file_without_double_dash_is_an_error_not_dropped():
 @pytest.mark.parametrize("argv", [
     ["--encrypt"], ["--encrypt", "--"], ["--decrypt", "--encrypt", "--", "a"],
     ["--register", "a.txt"], ["--unknown"], ["--help"],
+    ["--quiet"], ["--quiet", "a.txt"], ["--encrypt", "--quiet", "--", "a"],
 ])
 def test_bad_command_lines(argv):
     with pytest.raises(UsageError):
@@ -287,6 +288,21 @@ def test_main_register_uses_shell(monkeypatch):
     assert gui.main(["--register"]) == 0
     assert gui.main(["--unregister"]) == 0
     assert called == ["register", False, "unregister", False]
+
+
+def test_quiet_register_shows_nothing_but_keeps_the_exit_code(monkeypatch):
+    import filecrypt.gui as gui
+    assert parse_args(["--register", "--quiet"]) == Launch("register", [], quiet=True)
+    shown = []
+    monkeypatch.setattr(gui, "_message", lambda text, error=True: shown.append(text))
+    monkeypatch.setattr(shell, "register", lambda: None)
+    assert gui.main(["--register", "--quiet"]) == 0
+
+    def fail():
+        raise shell.ShellError("no")
+    monkeypatch.setattr(shell, "unregister", fail)
+    assert gui.main(["--unregister", "--quiet"]) == 1
+    assert shown == []
 
 
 def test_main_reports_usage_errors(monkeypatch):

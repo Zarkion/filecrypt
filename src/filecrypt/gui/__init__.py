@@ -6,6 +6,7 @@ Explorer integration (Windows)::
 
     filecrypt-gui --register            add "Encrypt with filecrypt" and .fcx entries
     filecrypt-gui --unregister          remove them again
+    (add --quiet to either to skip the message box; the exit code still tells)
     filecrypt-gui --encrypt -- PATH...  what the right-click entries run
     filecrypt-gui --decrypt -- PATH...
     filecrypt-gui --test -- PATH...
@@ -25,6 +26,7 @@ class Launch:
     """What the command line asked for."""
     action: str = "open"          # "open", "encrypt", "decrypt", "test", "register", "unregister"
     paths: List[str] = field(default_factory=list)
+    quiet: bool = False           # --register/--unregister: no message box (installers)
 
     @property
     def from_shell(self) -> bool:
@@ -47,6 +49,7 @@ def _parser() -> argparse.ArgumentParser:
     g = p.add_mutually_exclusive_group()
     for name in ("encrypt", "decrypt", "test", "register", "unregister"):
         g.add_argument(f"--{name}", dest="action", action="store_const", const=name)
+    p.add_argument("--quiet", action="store_true")
     p.add_argument("-h", "--help", action="store_true")
     p.add_argument("paths", nargs="*")
     return p
@@ -68,7 +71,9 @@ def parse_args(argv: List[str], cwd: Optional[str] = None) -> Launch:
     if action in ("register", "unregister"):
         if ns.paths:
             raise UsageError(f"--{action} takes no files")
-        return Launch(action)
+        return Launch(action, quiet=ns.quiet)
+    if ns.quiet:
+        raise UsageError("--quiet only goes with --register or --unregister")
     if action != "open" and not ns.paths:
         raise UsageError(f"--{action} needs at least one file after --")
     base = cwd or os.getcwd()
@@ -140,17 +145,18 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     if launch.action in ("register", "unregister"):
         from . import shell
+        say = (lambda text, error=True: None) if launch.quiet else _message
         try:
             if launch.action == "register":
                 shell.register()
-                _message("filecrypt was added to Explorer's right-click menu. To make .fcx "
+                say("filecrypt was added to Explorer's right-click menu. To make .fcx "
                          "files open with filecrypt on double-click, pick filecrypt once "
                          "under \"Open with\" if Windows asks.", error=False)
             else:
                 shell.unregister()
-                _message("filecrypt was removed from Explorer.", error=False)
+                say("filecrypt was removed from Explorer.", error=False)
         except (shell.ShellError, OSError) as e:
-            _message(f"filecrypt-gui: {e}")
+            say(f"filecrypt-gui: {e}")
             return 1
         return 0
 
