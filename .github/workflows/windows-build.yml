@@ -1,0 +1,80 @@
+name: Windows build
+
+# Builds the portable (onedir) Windows app with PyInstaller, runs the frozen
+# self-test against it, and uploads the folder as a zip. The zip is an
+# unsigned test build kept as a CI artifact only; this workflow never
+# publishes a release.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "src/**"
+      - "packaging/**"
+      - "tests/vectors/**"
+      - "pyproject.toml"
+      - ".github/workflows/windows-build.yml"
+  pull_request:
+    paths:
+      - "src/**"
+      - "packaging/**"
+      - "tests/vectors/**"
+      - "pyproject.toml"
+      - ".github/workflows/windows-build.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+  PYTHONDONTWRITEBYTECODE: "1"
+
+jobs:
+  build:
+    name: portable build (windows x64)
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+          architecture: x64
+      - name: Install build dependencies (hash-pinned)
+        run: python -m pip install --require-hashes --only-binary=":all:" -r packaging/requirements-build.txt
+      - name: Install filecrypt
+        run: python -m pip install --no-deps --no-build-isolation .
+      - name: Check Argon2 backend
+        run: python .github/scripts/check_ci_env.py backend native
+      - name: Build
+        run: pyinstaller --noconfirm --clean --distpath dist --workpath build packaging/filecrypt.spec
+      - name: Frozen self-test
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: python -I packaging/selftest.py dist --dist dist/filecrypt --vectors tests/vectors
+      - name: Zip
+        id: zip
+        shell: pwsh
+        run: |
+          Remove-Item dist/filecrypt/filecrypt-selftest.exe
+          $version = (python -c "import filecrypt; print(filecrypt.__version__)").Trim()
+          $sha = "${{ github.sha }}".Substring(0, 7)
+          $name = "filecrypt-$version-windows-x64-unsigned-$sha"
+          Compress-Archive -Path dist/filecrypt -DestinationPath "$name.zip"
+          (Get-FileHash "$name.zip" -Algorithm SHA256).Hash.ToLower() + "  $name.zip" | Tee-Object "$name.zip.sha256"
+          "name=$name" >> $env:GITHUB_OUTPUT
+      - uses: actions/upload-artifact@v5
+        with:
+          name: ${{ steps.zip.outputs.name }}
+          path: |
+            ${{ steps.zip.outputs.name }}.zip
+            ${{ steps.zip.outputs.name }}.zip.sha256
+          if-no-files-found: error
+          retention-days: 14
