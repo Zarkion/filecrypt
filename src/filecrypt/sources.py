@@ -114,6 +114,19 @@ _BUILTINS: Dict[str, type] = {
 }
 
 
+def secret_from_stored_text(text: str) -> Secret:
+    """Interpret a secret stored as text in a key store.
+
+    Base64 that decodes to at least 32 bytes (what ``keygen --store`` writes)
+    is a key; anything else is a passphrase. Plugins can reuse this.
+    """
+    raw = text.encode("utf-8")
+    decoded = load_key_material(raw)
+    if decoded != raw:
+        return Secret(decoded, "key")
+    return Secret(raw.strip(b"\r\n"), "passphrase")
+
+
 def _register_optional_builtins() -> None:
     from .keyring_source import KeyringSource
     _BUILTINS["keyring"] = KeyringSource
