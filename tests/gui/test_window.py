@@ -516,3 +516,18 @@ def test_check_it_opens_with_a_keyfile_as_password(win, qtbot, doc, tmp_path):
     raw = sources.FileSource().get(str(key))
     assert raw.kind == "key" and raw.value == key.read_bytes()
     engine.verify_file(tmp_path / "report.pdf.fcx", raw)
+
+
+# --- forgetting the password -------------------------------------------------------
+
+def test_closing_forgets_the_password(win, qtbot, doc):
+    _encrypt_in_window(win, qtbot, doc)
+    assert win._check_specs and win._check_specs[0].password == PW
+    win.show_password.setChecked(True)       # undo is only possible in plain-text mode
+    win.dec_password.insert(PW)              # typed, so it is in the undo history
+    win.close()
+    assert win._check_specs == [] and win._queue == []
+    for field in (win.enc_password, win.enc_confirm, win.dec_password):
+        assert field.text() == ""
+        field.undo()                         # Ctrl+Z must not bring it back
+        assert field.text() == ""

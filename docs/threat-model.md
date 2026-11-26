@@ -103,7 +103,11 @@ The full layout is in the [format spec](FORMAT.md).
 * **Memory hygiene.** filecrypt is written in Python, which cannot reliably
   wipe secrets from memory. Passphrases, KEKs and file keys can stay in RAM
   until the process exits and may reach the swap file, the Windows pagefile,
-  hibernation files or crash dumps.
+  hibernation files or crash dumps. The desktop window does what it can: it
+  empties the password boxes after a successful run and, when it closes,
+  empties them and drops every copy of the password it was keeping (for
+  example for **Check it opens**). That stops the window from holding on to
+  the password, but it does not overwrite the memory those copies used.
 * **Plaintext after you decrypt it.** Once a file is decrypted, protecting it
   is up to you and your operating system.
 

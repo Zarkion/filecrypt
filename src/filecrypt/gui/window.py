@@ -878,10 +878,27 @@ class MainWindow(QMainWindow):
         self.open_folder.setVisible(self.last_output is not None and self.mode != TEST)
         if self._verify_from is not None:
             return                     # keep the password: decrypting is likely next
-        self.enc_password.clear()
-        self.enc_confirm.clear()
-        self.dec_password.clear()
+        self._clear_password_fields()
         self.understand.setChecked(False)
+
+    def _clear_password_fields(self) -> None:
+        # setText("") rather than clear(): clear() can be undone with Ctrl+Z when
+        # "Show password" is on, while setText also drops the undo history.
+        for field in (self.enc_password, self.enc_confirm, self.dec_password):
+            field.setText("")
+
+    def forget_secrets(self) -> None:
+        """Drop every password this window holds, best effort.
+
+        Empties the password boxes (and their undo history) and drops the job
+        descriptions that carry the password: the queue of files still to do and
+        the saved "Check it opens" jobs. Python and Qt can't overwrite memory
+        that held a string, so copies may stay in RAM until it is reused or the
+        program exits; this only makes sure the window no longer keeps them.
+        """
+        self._clear_password_fields()
+        self._check_specs = []
+        self._queue = []
 
     def _motw_note(self) -> str:
         if not self._motw_failed:
@@ -984,4 +1001,5 @@ class MainWindow(QMainWindow):
             job = self.job
             job.cancel()
             job.wait()
+        self.forget_secrets()
         event.accept()
