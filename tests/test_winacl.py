@@ -8,7 +8,7 @@ import pytest
 
 pytestmark = pytest.mark.skipif(sys.platform != "win32", reason="Windows ACLs")
 
-from filecrypt import cli, keygen  # noqa: E402
+from filecrypt import cli, engine, keygen  # noqa: E402
 
 if sys.platform == "win32":
     from filecrypt import _winacl
@@ -146,3 +146,68 @@ def test_cli_keygen_owner_only(open_dir, monkeypatch):
     monkeypatch.chdir(open_dir)
     assert cli.main(["keygen", "cli.key"]) == 0
     assert_owner_only(open_dir / "cli.key")
+
+
+# Output temp files (.part), which hold plaintext while decrypting.
+
+def _no_restrict(path):
+    raise AssertionError("restrict_to_owner should not be needed")
+
+
+def test_part_file_owner_only_before_any_write(open_dir, monkeypatch):
+    monkeypatch.setattr(_winacl, "restrict_to_owner", _no_restrict)
+    dest = open_dir / "out.txt"
+    with engine.AtomicOutput(dest, force=False) as out:
+        assert out._delete_on_close
+        assert os.path.getsize(out._tmp) == 0
+        assert_owner_only(out._tmp)
+        out.file.write(b"plaintext")
+        out.commit()
+    assert dest.read_bytes() == b"plaintext"
+    assert_owner_only(dest)
+
+
+def test_part_file_owner_only_without_delete_on_close(open_dir, monkeypatch):
+    from filecrypt import _windelete
+    monkeypatch.setattr(_windelete, "set_delete_on_close", lambda fd, enabled: False)
+    monkeypatch.setattr(_winacl, "restrict_to_owner", _no_restrict)
+    dest = open_dir / "out.txt"
+    with engine.AtomicOutput(dest, force=False) as out:
+        assert not out._delete_on_close
+        assert_owner_only(out._tmp)
+        out.file.write(b"plaintext")
+        out.commit()
+    assert dest.read_bytes() == b"plaintext"
+    assert_owner_only(dest)
+    assert [p.name for p in open_dir.iterdir()] == ["out.txt"]
+
+
+def test_part_file_abort_removes_it(open_dir):
+    dest = open_dir / "out.txt"
+    with pytest.raises(RuntimeError):
+        with engine.AtomicOutput(dest, force=False) as out:
+            out.file.write(b"plaintext")
+            raise RuntimeError("boom")
+    assert list(open_dir.iterdir()) == []
+
+
+def test_part_file_restricted_when_descriptor_unavailable(open_dir, monkeypatch):
+    monkeypatch.setattr(_winacl, "_owner_only_sd", _no_security_descriptor)
+    monkeypatch.setattr(_winacl, "_set_dacl_ctypes", lambda path: False)  # icacls only
+    dest = open_dir / "out.txt"
+    with engine.AtomicOutput(dest, force=False) as out:
+        assert_owner_only(out._tmp)
+        out.file.write(b"plaintext")
+        out.commit()
+    assert_owner_only(dest)
+
+
+def test_cli_decrypt_output_owner_only(open_dir, monkeypatch):
+    monkeypatch.chdir(open_dir)
+    monkeypatch.setenv("FC_PASS", "a perfectly fine passphrase")
+    (open_dir / "doc.txt").write_bytes(b"secret")
+    assert cli.main(["encrypt", "doc.txt", "--key", "env:FC_PASS", "--kdf", "scrypt"]) == 0
+    (open_dir / "doc.txt").unlink()
+    assert cli.main(["decrypt", "doc.txt.fcx", "--key", "env:FC_PASS"]) == 0
+    assert (open_dir / "doc.txt").read_bytes() == b"secret"
+    assert_owner_only(open_dir / "doc.txt")
